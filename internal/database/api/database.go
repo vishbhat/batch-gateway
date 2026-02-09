@@ -61,7 +61,7 @@ type BatchDBClient interface {
 	// DBGet gets the information (static and dynamic) of batch items.
 	// If IDs are specified, this function will get items by the specified IDs.
 	// If tags are specified, this function will get items by the specified tags.
-	// If expired is set to true, this function will get expired items. This option can be used with tags selection.
+	// If expired is set to true, this function will get expired items.
 	// If no IDs nor tags nor expired are specified, the function will return an empty list of items.
 	// tagsLogicalCond specifies the logical condition to use for when searching for the tags per item.
 	// includeStatic specifies if to include the static part of a item in the returned output.
@@ -71,9 +71,10 @@ type BatchDBClient interface {
 	// The value specified in 'limit' can be different between iterations, and is a recommendation only.
 	// items is a slice of returned items.
 	// cursor is an opaque integer that should be given in the next paginated call via the 'start' parameter.
+	// expectMore indicates if there are more items to get.
 	DBGet(ctx context.Context, query *BatchDBQuery,
 		includeStatic bool, start, limit int) (
-		items []*BatchItem, cursor int, expectedMore bool, err error)
+		items []*BatchItem, cursor int, expectMore bool, err error)
 
 	// DBUpdate updates the dynamic parts of a batch item.
 	// The function will update in the item's record in the database - all the dynamic fields of the item which are not empty
@@ -146,13 +147,14 @@ type BatchPriorityQueueClient interface {
 	PQEnqueue(ctx context.Context, jobPriority *BatchJobPriority) (err error)
 
 	// PQDequeue returns the job priority objects at the head of the queue,
-	// up to the maximum number of objects specified in maxObjs.
+	// up to the maximum number of objects specified in maxItems.
 	// The function blocks up to the timeout value for a job priority object to be available.
 	// If the timeout value is zero, the function returns immediately.
-	PQDequeue(ctx context.Context, timeout time.Duration, maxObjs int) (
+	PQDequeue(ctx context.Context, timeout time.Duration, maxItems int) (
 		jobPriorities []*BatchJobPriority, err error)
 
 	// PQDelete deletes a job priority object from the queue.
+	// Specify the ID and SLO values for deleting. Other values are not required.
 	// It returns the number of deleted objects.
 	// An error is returned only if the deletion operation failed.
 	PQDelete(ctx context.Context, jobPriority *BatchJobPriority) (nDeleted int, err error)
