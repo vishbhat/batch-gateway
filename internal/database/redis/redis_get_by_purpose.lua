@@ -12,21 +12,27 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 
--- Get by IDs lua script.
+-- Get by purpose lua script.
 
 -- Parse inputs.
-local keys = KEYS
-local includeStatic = ARGV[1]
-local tenantID = ARGV[2]
+local purpose = ARGV[1]
+local includeStatic = ARGV[2]
+local pattern = ARGV[3]
+local cursor = ARGV[4]
+local count = ARGV[5]
+local tenantID = ARGV[6]
 
 -- Check inputs.
 local result = {}
-if #keys == 0 then
-	return {tonumber(0), result}
+if purpose == nil or purpose == '' then
+	return {0, result}
 end
 
--- Iterate over the IDs.
-for _, key in ipairs(keys) do
+-- Get the keys for the current iteration.
+local scan_out = redis.call('SCAN', cursor, 'TYPE', 'hash', 'MATCH', pattern, 'COUNT', count)
+
+-- Iterate over the keys.
+for _, key in ipairs(scan_out[2]) do
 	-- Get the key's contents.
 	local contents
 	if includeStatic == 'true' then
@@ -35,10 +41,10 @@ for _, key in ipairs(keys) do
 		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "purpose", "status")
 	end
 	-- Check inclusion condition.
-	if (contents ~= nil) and (tenantID == nil or tenantID == '' or tenantID == contents[2]) then
+	if (contents ~= nil) and (contents[5] == purpose) and (tenantID == nil or tenantID == '' or tenantID == contents[2]) then
 		table.insert(result, contents)
 	end
 end
 
 -- Return the result.
-return {tonumber(0), result}
+return {tonumber(scan_out[1]), result}

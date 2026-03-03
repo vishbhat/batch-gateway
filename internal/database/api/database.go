@@ -42,13 +42,15 @@ type DBClient[T any, Q any] interface {
 	// DBStore persists an item.
 	DBStore(ctx context.Context, item *T) (err error)
 
-	// DBGet gets the information (static and dynamic) of items.
+	// DBGet gets the information of items.
 	// If IDs are specified, this function will get items by the specified item IDs.
 	// If tags are specified, this function will get items by the specified tags.
-	// If expired is set to true, this function will get expired items.
-	// If TenantID is specified, only items belonging to that tenant are returned.
-	// If no query conditions are specified, the function will return an empty list of items.
 	// tagsLogicalCond specifies the logical condition to use when searching for the tags per item.
+	// If expired is set to true, this function will get expired items.
+	// If purpose is specified, this function will get items by the specified purpose.
+	// If TenantID is specified, only items belonging to that tenant are returned.
+	// Specification of a TenantID can be added to any other condition.
+	// If no query conditions are specified, the function will return an empty list of items.
 	// includeStatic specifies if to include the static part of an item in the returned output.
 	// start and limit specify the pagination details. This is relevant for any query condition except IDs.
 	// In the first iteration with pagination specify 0 for 'start', and in any subsequent iteration specify in 'start'
@@ -91,8 +93,8 @@ var LogicalCondNames = map[LogicalCond]string{
 type BatchJobPriority struct {
 	ID   string    `json:"id,omitempty"`   // [mandatory] ID of the batch job.
 	SLO  time.Time `json:"slo,omitempty"`  // [mandatory] The SLO value determines the priority of the job.
-	TTL  int       `json:"ttl,omitempty"`  // [optional] TTL in seconds for the record.
 	Data []byte    `json:"data,omitempty"` // [optional] User defined data.
+	TTL  int       // [optional] TTL in seconds applied on the entire queue. If used, this should be set to a sufficiently large value to prevent premature removal of items.
 }
 
 func (bj *BatchJobPriority) IsValid() error {
@@ -102,9 +104,6 @@ func (bj *BatchJobPriority) IsValid() error {
 	if bj.SLO.IsZero() {
 		return fmt.Errorf("SLO is zero for ID %s", bj.ID)
 	}
-	// if bj.TTL <= 0 { TBD
-	// 	return fmt.Errorf("TTL is invalid for ID %s", bj.ID)
-	// }
 	return nil
 }
 

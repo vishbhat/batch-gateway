@@ -31,90 +31,158 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func (c *BatchDSClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem) (err error) {
+func (c *BatchDBClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
 	if err = item.Validate(); err != nil {
-		logger.Error(err, "DBStore: item validation failed")
+		klog.FromContext(ctx).Error(err, "DBStore[Batch]: item validation failed")
 		return
 	}
-	logger = logger.WithValues("ID", item.ID)
+	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
+		itemTypeBatch, "DBStore[Batch]", nil, nil)
+}
 
-	ptags, err := packTags(item.Tags)
+func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) (err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err = item.Validate(); err != nil {
+		klog.FromContext(ctx).Error(err, "DBStore[File]: item validation failed")
+		return
+	}
+	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
+		itemTypeFile, "DBStore[File]", nil, []interface{}{item.Purpose})
+}
+
+func (c *DSClientRedis) dbStore(ctx context.Context,
+	indexes *db_api.BaseIndexes, contents *db_api.BaseContents,
+	itemType, logPref string, extraFieldsBatch, extraFieldsFile []interface{}) (err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx).WithValues("ID", indexes.ID)
+
+	ptags, err := packTags(indexes.Tags)
 	if err != nil {
-		logger.Error(err, "DBStore: tags packing failed")
+		logger.Error(err, logPref+": tags packing failed")
 		return err
 	}
+	args := []interface{}{itemType, versionV1, indexes.ID, indexes.TenantID,
+		indexes.Expiry, ptags, contents.Status, contents.Spec, ttlSecDefault}
+	if len(extraFieldsFile) > 0 && itemType == itemTypeFile {
+		args = append(args, extraFieldsFile...)
+	} else if len(extraFieldsBatch) > 0 && itemType == itemTypeBatch {
+		args = append(args, extraFieldsBatch...)
+	}
+
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
 	res, err := redisScriptStore.Run(cctx, c.redisClient,
-		[]string{getKeyForStore(item.ID, c.tableName)},
-		versionV1, item.ID, item.TenantID, item.Expiry, ptags, item.Status, item.Spec, ttlSecDefault).Text()
+		[]string{getKeyForStore(indexes.ID, itemType)}, args...).Text()
 	if err != nil {
-		logger.Error(err, "DBStore: script failed")
+		logger.Error(err, logPref+": script failed")
 		return err
 	}
 	if len(res) > 0 {
 		err = fmt.Errorf("%s", res)
-		logger.Error(err, "DBStore: script failed")
+		logger.Error(err, logPref+": script failed")
 		return
 	}
 
-	logger.Info("DBStore: succeeded")
+	logger.Info(logPref + ": succeeded")
 	return nil
 }
 
-func (c *BatchDSClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchItem) (err error) {
+func getUpdateFields(status []byte, tags db_api.Tags) (
+	fields []interface{}, updateStatus, updateTags bool, err error) {
+
+	fields = make([]interface{}, 0, 2)
+	if len(status) > 0 {
+		fields = append(fields, fieldNameStatus, status)
+		updateStatus = true
+	}
+	if len(tags) > 0 {
+		var ptags string
+		ptags, err = packTags(tags)
+		if err != nil {
+			return
+		}
+		fields = append(fields, fieldNameTags, ptags)
+		updateTags = true
+	}
+	return
+}
+
+func (c *BatchDBClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchItem) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
 	if err = item.Validate(); err != nil {
-		logger.Error(err, "DBUpdate:")
+		klog.FromContext(ctx).Error(err, "DBUpdate[Batch]: item validation failed")
 		return
 	}
-	logger = logger.WithValues("ID", item.ID)
+	return c.dbUpdate(ctx, &item.BaseIndexes, &item.BaseContents, itemTypeBatch, "DBUpdate[Batch]")
+}
 
-	// Only update non-empty dynamic fields.
-	var fields []interface{}
+func (c *FileDBClientRedis) DBUpdate(ctx context.Context, item *db_api.FileItem) (err error) {
 
-	if len(item.Status) > 0 {
-		fields = append(fields, fieldNameStatus, item.Status)
+	if ctx == nil {
+		ctx = context.Background()
 	}
-
-	if len(item.Tags) > 0 {
-		var ptags string
-		ptags, err = packTags(item.Tags)
-		if err != nil {
-			logger.Error(err, "DBUpdate: tags packing failed")
-			return
-		}
-		fields = append(fields, fieldNameTags, ptags)
+	if err = item.Validate(); err != nil {
+		klog.FromContext(ctx).Error(err, "DBUpdate[File]: item validation failed")
+		return
 	}
+	return c.dbUpdate(ctx, &item.BaseIndexes, &item.BaseContents, itemTypeFile, "DBUpdate[File]")
+}
 
+func (c *DSClientRedis) dbUpdate(ctx context.Context,
+	indexes *db_api.BaseIndexes, contents *db_api.BaseContents,
+	itemType, logPref string) (err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx).WithValues("ID", indexes.ID)
+
+	fields, updatedStatus, updatedTags, err := getUpdateFields(contents.Status, indexes.Tags)
+	if err != nil {
+		logger.Error(err, logPref+": getUpdateFields failed")
+		return err
+	}
 	if len(fields) == 0 {
-		logger.Info("DBUpdate: nothing to update")
+		logger.Info(logPref + ": nothing to update")
 		return nil
 	}
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
-	err = c.redisClient.HSet(cctx, getKeyForStore(item.ID, c.tableName), fields...).Err()
+	err = c.redisClient.HSet(cctx, getKeyForStore(indexes.ID, itemType), fields...).Err()
 	if err != nil {
-		logger.Error(err, "DBUpdate: HSet failed")
+		logger.Error(err, logPref+": HSet failed")
 		return
 	}
 
-	updatedStatus, updatedTags := len(item.Status) > 0, len(item.Tags) > 0
-	logger.Info("DBUpdate: succeeded", "updatedStatus", updatedStatus, "updatedTags", updatedTags)
+	logger.Info(logPref+": succeeded", "updatedStatus", updatedStatus, "updatedTags", updatedTags)
 	return nil
 }
 
-func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
+func (c *BatchDBClientRedis) DBDelete(ctx context.Context, IDs []string) (
+	deletedIDs []string, err error) {
+	return c.DSClientRedis.dBDelete(ctx, IDs, itemTypeBatch, "DBDelete[Batch]")
+}
+
+func (c *FileDBClientRedis) DBDelete(ctx context.Context, IDs []string) (
+	deletedIDs []string, err error) {
+	return c.DSClientRedis.dBDelete(ctx, IDs, itemTypeFile, "DBDelete[File]")
+}
+
+func (c *DSClientRedis) dBDelete(ctx context.Context, IDs []string, itemType, logPref string) (
 	deletedIDs []string, err error) {
 
 	if ctx == nil {
@@ -124,25 +192,24 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 
 	// Delete the items.
 	resMap := make(map[string]*goredis.IntCmd)
+	var cmds []goredis.Cmder
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
-	var cmds []goredis.Cmder
 	cmds, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		for _, id := range IDs {
-			res := pipe.HDel(cctx, getKeyForStore(id, c.tableName),
-				fieldNameVersion, fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
+			res := pipe.Del(cctx, getKeyForStore(id, itemType))
 			resMap[id] = res
 		}
 		return nil
 	})
 	if err != nil {
-		logger.Error(err, "DBDelete: Pipelined failed")
+		logger.Error(err, logPref+": Pipelined failed")
 		return
 	}
 	for _, cmd := range cmds {
 		if cmd.Err() != nil && cmd.Err() != goredis.Nil {
 			err = cmd.Err()
-			logger.Error(err, "DBDelete: Command inside pipeline failed")
+			logger.Error(err, logPref+": Command inside pipeline failed")
 			break
 		}
 	}
@@ -153,12 +220,11 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 		}
 	}
 
-	logger.Info("DBDelete: succeeded", "nItems", len(deletedIDs), "IDs", deletedIDs)
-
+	logger.Info(logPref+": succeeded", "nItems", len(deletedIDs), "IDs", deletedIDs)
 	return
 }
 
-func (c *BatchDSClientRedis) DBGet(
+func (c *BatchDBClientRedis) DBGet(
 	ctx context.Context, query *db_api.BatchQuery,
 	includeStatic bool, start, limit int) (
 	items []*db_api.BatchItem, cursor int, expectMore bool, err error) {
@@ -168,70 +234,37 @@ func (c *BatchDSClientRedis) DBGet(
 	}
 	logger := klog.FromContext(ctx)
 	if query == nil {
-		logger.Info("DBGet: empty query")
+		logger.Info("DBGet[Batch]: empty query")
 		return
 	}
 
 	if len(query.IDs) > 0 {
 
-		// Get the item records.
+		var res []interface{}
+		keys := make([]string, 0, len(query.IDs))
+		for _, id := range query.IDs {
+			keys = append(keys, getKeyForStore(id, itemTypeBatch))
+		}
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
-		var cmds []goredis.Cmder
-		cmds, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
-			for _, id := range query.IDs {
-				if includeStatic {
-					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
-						fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
-				} else {
-					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
-						fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus)
-				}
-			}
-			return nil
-		})
+		res, err = redisScriptGetByIDs.Run(cctx, c.redisClient,
+			keys, strconv.FormatBool(includeStatic), query.TenantID).Slice()
 		if err != nil {
-			logger.Error(err, "DBGet: Pipelined failed")
+			logger.Error(err, "DBGet[Batch]: script failed")
 			return
 		}
-
-		// Process the items.
-		items = make([]*db_api.BatchItem, 0, len(cmds))
-		for i, cmd := range cmds {
-			if cmd.Err() != nil {
-				if cmd.Err() != goredis.Nil {
-					logger.Error(cmd.Err(), "DBGet: HMGet failed", "requestedID", query.IDs[i])
-				}
-				continue
-			}
-
-			hgetRes, ok := cmd.(*goredis.SliceCmd)
-			if !ok {
-				err = fmt.Errorf("unexpected result type from HMGet: %T", cmd)
-				logger.Error(err, "DBGet:", "requestedID", query.IDs[i])
-				return nil, 0, false, err
-			}
-
-			var item *db_api.BatchItem
-			item, err = batchItemFromHget(hgetRes.Val(), includeStatic, logger)
-			if err != nil {
-				return nil, 0, false, err
-			}
-
-			// Filter by tenant if specified.
-			if item != nil && len(query.TenantID) > 0 && item.TenantID != query.TenantID {
-				items = append(items, item)
-			}
+		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
+		if err != nil {
+			logger.Error(err, "DBGet[Batch]: processGetScriptResultBatch failed")
+			return
 		}
-		cursor = len(items)
-		expectMore = false
 
 	} else if len(query.TagSelectors) > 0 {
 
 		cond, found := db_api.LogicalCondNames[query.TagsLogicalCond]
 		if !found {
 			err = fmt.Errorf("invalid logical condition value: %d", query.TagsLogicalCond)
-			logger.Error(err, "DBGet:")
+			logger.Error(err, "DBGet[Batch]:")
 			return
 		}
 		var res []interface{}
@@ -239,14 +272,14 @@ func (c *BatchDSClientRedis) DBGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
-			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(c.tableName), start, limit, query.TenantID).Slice()
+			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(itemTypeBatch), start, limit, query.TenantID).Slice()
 		if err != nil {
-			logger.Error(err, "DBGet: script failed")
+			logger.Error(err, "DBGet[Batch]: script failed")
 			return
 		}
-		cursor, expectMore, items, err = processGetScriptResult(res, includeStatic, logger)
+		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
 		if err != nil {
-			logger.Error(err, "DBGet:")
+			logger.Error(err, "DBGet[Batch]: processGetScriptResultBatch failed")
 			return
 		}
 
@@ -258,25 +291,164 @@ func (c *BatchDSClientRedis) DBGet(
 		defer ccancel()
 		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
 			[]string{}, curTimestamp, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(c.tableName), start, limit, query.TenantID).Slice()
+			getKeyPatternForStore(itemTypeBatch), start, limit, query.TenantID).Slice()
 		if err != nil {
-			logger.Error(err, "DBGet: script failed")
+			logger.Error(err, "DBGet[Batch]: script failed")
 			return
 		}
-		cursor, expectMore, items, err = processGetScriptResult(res, includeStatic, logger)
+		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
 		if err != nil {
-			logger.Error(err, "DBGet:")
+			logger.Error(err, "DBGet[Batch]: processGetScriptResultBatch failed")
+			return
+		}
+
+	} else if len(query.TenantID) > 0 {
+
+		var res []interface{}
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByTenant.Run(cctx, c.redisClient,
+			[]string{}, query.TenantID, strconv.FormatBool(includeStatic),
+			getKeyPatternForStore(itemTypeBatch), start, limit).Slice()
+		if err != nil {
+			logger.Error(err, "DBGet[Batch]: script failed")
+			return
+		}
+		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
+		if err != nil {
+			logger.Error(err, "DBGet[Batch]: processGetScriptResultBatch failed")
 			return
 		}
 
 	}
 
-	logger.Info("DBGet: succeeded", "nItems", len(items))
+	logger.Info("DBGet[Batch]: succeeded", "nItems", len(items))
 
 	return
 }
 
-func processGetScriptResult(res []interface{}, includeStatic bool, logger klog.Logger) (
+func (c *FileDBClientRedis) DBGet(
+	ctx context.Context, query *db_api.FileQuery,
+	includeStatic bool, start, limit int) (
+	items []*db_api.FileItem, cursor int, expectMore bool, err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx)
+	if query == nil {
+		logger.Info("DBGet[File]: empty query")
+		return
+	}
+
+	if len(query.IDs) > 0 {
+
+		var res []interface{}
+		keys := make([]string, 0, len(query.IDs))
+		for _, id := range query.IDs {
+			keys = append(keys, getKeyForStore(id, itemTypeFile))
+		}
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByIDs.Run(cctx, c.redisClient,
+			keys, strconv.FormatBool(includeStatic), query.TenantID).Slice()
+		if err != nil {
+			logger.Error(err, "DBGet[File]: script failed")
+			return
+		}
+		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
+		if err != nil {
+			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
+			return
+		}
+
+	} else if len(query.TagSelectors) > 0 {
+
+		cond, found := db_api.LogicalCondNames[query.TagsLogicalCond]
+		if !found {
+			err = fmt.Errorf("invalid logical condition value: %d", query.TagsLogicalCond)
+			logger.Error(err, "DBGet[File]:")
+			return
+		}
+		var res []interface{}
+		ctags := convertTags(query.TagSelectors)
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
+			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(itemTypeFile), start, limit, query.TenantID).Slice()
+		if err != nil {
+			logger.Error(err, "DBGet[File]: script failed")
+			return
+		}
+		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
+		if err != nil {
+			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
+			return
+		}
+
+	} else if query.Expired {
+
+		var res []interface{}
+		curTimestamp := time.Now().Unix()
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
+			[]string{}, curTimestamp, strconv.FormatBool(includeStatic),
+			getKeyPatternForStore(itemTypeFile), start, limit, query.TenantID).Slice()
+		if err != nil {
+			logger.Error(err, "DBGet[File]: script failed")
+			return
+		}
+		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
+		if err != nil {
+			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
+			return
+		}
+
+	} else if len(query.Purpose) > 0 {
+
+		var res []interface{}
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByPurpose.Run(cctx, c.redisClient,
+			[]string{}, query.Purpose, strconv.FormatBool(includeStatic),
+			getKeyPatternForStore(itemTypeFile), start, limit, query.TenantID).Slice()
+		if err != nil {
+			logger.Error(err, "DBGet[File]: script failed")
+			return
+		}
+		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
+		if err != nil {
+			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
+			return
+		}
+
+	} else if len(query.TenantID) > 0 {
+
+		var res []interface{}
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByTenant.Run(cctx, c.redisClient,
+			[]string{}, query.TenantID, strconv.FormatBool(includeStatic),
+			getKeyPatternForStore(itemTypeFile), start, limit).Slice()
+		if err != nil {
+			logger.Error(err, "DBGet[File]: script failed")
+			return
+		}
+		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
+		if err != nil {
+			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
+			return
+		}
+
+	}
+
+	logger.Info("DBGet[File]: succeeded", "nItems", len(items))
+
+	return
+}
+
+func processGetScriptResultBatch(res []interface{}, includeStatic bool) (
 	cursor int, expectMore bool, items []*db_api.BatchItem, err error) {
 
 	if len(res) != 2 {
@@ -295,9 +467,7 @@ func processGetScriptResult(res []interface{}, includeStatic bool, logger klog.L
 	}
 	items = make([]*db_api.BatchItem, 0, len(resItems))
 	for _, resItem := range resItems {
-		vals := resItem.([]interface{})
-		var item *db_api.BatchItem
-		item, err = batchItemFromHget(vals, includeStatic, logger)
+		item, err := batchItemFromHget(resItem.([]interface{}), includeStatic)
 		if err != nil {
 			return 0, false, nil, err
 		}
@@ -311,12 +481,45 @@ func processGetScriptResult(res []interface{}, includeStatic bool, logger klog.L
 	return
 }
 
-func getKeyForStore(key, tableName string) string {
-	return storeKeysPrefix + tableName + ":" + key
+func processGetScriptResultFile(res []interface{}, includeStatic bool) (
+	cursor int, expectMore bool, items []*db_api.FileItem, err error) {
+
+	if len(res) != 2 {
+		err = fmt.Errorf("unexpected result from script")
+		return
+	}
+	resItems, ok := res[1].([]interface{})
+	if !ok {
+		err = fmt.Errorf("unexpected result type from script: %T", res[1])
+		return
+	}
+	resCursor, ok := res[0].(int64)
+	if !ok {
+		err = fmt.Errorf("unexpected result type from script: %T", res[0])
+		return
+	}
+	items = make([]*db_api.FileItem, 0, len(resItems))
+	for _, resItem := range resItems {
+		item, err := fileItemFromHget(resItem.([]interface{}), includeStatic)
+		if err != nil {
+			return 0, false, nil, err
+		}
+		if item != nil {
+			items = append(items, item)
+		}
+	}
+	cursor = int(resCursor)
+	expectMore = (cursor != 0)
+
+	return
 }
 
-func getKeyPatternForStore(tableName string) string {
-	return storeKeysPrefix + tableName + ":*"
+func getKeyForStore(key, itemType string) string {
+	return storeKeysPrefix + itemType + ":" + key
+}
+
+func getKeyPatternForStore(itemType string) string {
+	return storeKeysPrefix + itemType + ":*"
 }
 
 func packTags(tags map[string]string) (string, error) {
@@ -352,27 +555,76 @@ func convertTags(tags map[string]string) (ctags []string) {
 	return
 }
 
-// batchItemFromHget reconstructs a BatchItem from Redis HMGET results.
-// Field positions: [0]=id, [1]=tenantID, [2]=expiry, [3]=tags, [4]=status, [5]=spec (if includeStatic).
-func batchItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logger) (item *db_api.BatchItem, err error) {
+func batchItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.BatchItem, err error) {
 
-	if (includeStatic && len(vals) != 6) || (!includeStatic && len(vals) != 5) {
+	ID, tenantID, expiry, tags, _, status, spec, err := itemFromHget(vals, includeStatic)
+	if err != nil {
+		return nil, err
+	}
+
+	item = &db_api.BatchItem{
+		BaseIndexes: db_api.BaseIndexes{
+			ID:       ID,
+			TenantID: tenantID,
+			Expiry:   expiry,
+			Tags:     tags,
+		},
+		BaseContents: db_api.BaseContents{
+			Spec:   spec,
+			Status: status,
+		},
+	}
+
+	return
+}
+
+func fileItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.FileItem, err error) {
+
+	ID, tenantID, expiry, tags, purpose, status, spec, err := itemFromHget(vals, includeStatic)
+	if err != nil {
+		return nil, err
+	}
+
+	item = &db_api.FileItem{
+		BaseIndexes: db_api.BaseIndexes{
+			ID:       ID,
+			TenantID: tenantID,
+			Expiry:   expiry,
+			Tags:     tags,
+		},
+		Purpose: purpose,
+		BaseContents: db_api.BaseContents{
+			Spec:   spec,
+			Status: status,
+		},
+	}
+
+	return
+}
+
+func itemFromHget(vals []interface{}, includeStatic bool) (
+	ID, tenantID string, expiry int64, tags db_api.Tags,
+	purpose string, status, spec []byte, err error) {
+
+	// Field positions: [0]=ID, [1]=tenantID, [2]=expiry, [3]=tags, [4]=purpose, [5]=status, [6]=spec (if includeStatic).
+
+	if (includeStatic && len(vals) != 7) || (!includeStatic && len(vals) != 6) {
 		err = fmt.Errorf("unexpected result contents from HMGet: %v", vals)
 		return
 	}
 
-	ID, ok := vals[0].(string)
+	var ok bool
+	ID, ok = vals[0].(string)
 	if !ok || len(ID) == 0 {
 		err = fmt.Errorf("missing or invalid id field: %v", vals[0])
 		return
 	}
 
-	tenantID, ok := vals[1].(string)
+	tenantID, ok = vals[1].(string)
 	if !ok {
 		tenantID = ""
 	}
 
-	var expiry int64
 	if expiryStr, ok := vals[2].(string); ok && len(expiryStr) > 0 {
 		expiry, err = strconv.ParseInt(expiryStr, 10, 64)
 		if err != nil {
@@ -381,41 +633,28 @@ func batchItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logge
 		}
 	}
 
-	tags, ok := vals[3].(string)
+	tagsStr, ok := vals[3].(string)
 	if !ok {
-		tags = ""
+		tagsStr = ""
 	}
-	nTags, err := unpackTags(tags)
+	tags, err = unpackTags(tagsStr)
 	if err != nil {
-		logger.Error(err, "batchItemFromHget:")
-		return item, err
+		return
 	}
 
-	// Store the serialized status part (already in []byte form).
-	var status []byte
-	if statusStr, ok := vals[4].(string); ok && len(statusStr) > 0 {
+	purpose, ok = vals[4].(string)
+	if !ok {
+		purpose = ""
+	}
+
+	if statusStr, ok := vals[5].(string); ok && len(statusStr) > 0 {
 		status = []byte(statusStr)
 	}
 
-	// Store the serialized spec part only if requested.
-	var spec []byte
 	if includeStatic {
-		if specStr, ok := vals[5].(string); ok && len(specStr) > 0 {
+		if specStr, ok := vals[6].(string); ok && len(specStr) > 0 {
 			spec = []byte(specStr)
 		}
-	}
-
-	item = &db_api.BatchItem{
-		BaseIndexes: db_api.BaseIndexes{
-			ID:       ID,
-			TenantID: tenantID,
-			Expiry:   expiry,
-			Tags:     nTags,
-		},
-		BaseContents: db_api.BaseContents{
-			Spec:   spec,
-			Status: status,
-		},
 	}
 
 	return
