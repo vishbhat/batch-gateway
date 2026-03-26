@@ -34,6 +34,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
@@ -291,7 +292,9 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		cfg.FileClientCfg.Type,
 		&cfg.FileClientCfg.FSConfig,
 		&cfg.FileClientCfg.S3Config,
+		&cfg.FileClientCfg.Retry,
 		modelGatewaysConfigs,
+		ucom.ComponentProcessor,
 	)
 	if err != nil {
 		logger.Error(err, "Failed to create clients")

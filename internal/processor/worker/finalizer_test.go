@@ -1,12 +1,10 @@
 package worker
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
@@ -141,11 +139,6 @@ func TestUploadFileAndStoreFileRecord_StorageKeyAndDBFilename(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	cfg.UploadRetry = config.RetryConfig{
-		MaxRetries:     0,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     10 * time.Millisecond,
-	}
 
 	mock := &failNTimesFilesClient{failCount: 0}
 	fileDB := newMockFileDBClient()
@@ -224,109 +217,6 @@ func TestStoreOutputFileRecord_Success(t *testing.T) {
 	}
 }
 
-// --- uploadOutputFile retry ---
-
-// --- storage key format ---
-
-func TestUploadOutputFile_UsesFileStorageName(t *testing.T) {
-	cfg := config.NewConfig()
-	cfg.WorkDir = t.TempDir()
-	cfg.UploadRetry = config.RetryConfig{
-		MaxRetries:     0,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     10 * time.Millisecond,
-	}
-
-	mock := &failNTimesFilesClient{failCount: 0}
-	p := mustNewProcessor(t, cfg, &clientset.Clientset{File: mock})
-
-	jobInfo := setupJobWithOutputFile(t, cfg, "job-key-fmt", "tenant-1")
-	ctx := testLoggerCtx()
-
-	_, err := p.uploadOutputFile(ctx, jobInfo, "file_abc.jsonl")
-	if err != nil {
-		t.Fatalf("uploadOutputFile returned error: %v", err)
-	}
-	if mock.lastFileName != "file_abc.jsonl" {
-		t.Errorf("storage key = %q, want %q", mock.lastFileName, "file_abc.jsonl")
-	}
-}
-
-// --- uploadOutputFile retry ---
-
-func TestUploadOutputFile_RetriesAndSucceeds(t *testing.T) {
-	cfg := config.NewConfig()
-	cfg.WorkDir = t.TempDir()
-	cfg.UploadRetry = config.RetryConfig{
-		MaxRetries:     3,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     10 * time.Millisecond,
-	}
-
-	mock := &failNTimesFilesClient{failCount: 2}
-	p := mustNewProcessor(t, cfg, &clientset.Clientset{File: mock})
-
-	jobInfo := setupJobWithOutputFile(t, cfg, "job-retry", "tenant-1")
-	ctx := testLoggerCtx()
-
-	size, err := p.uploadOutputFile(ctx, jobInfo, "output.jsonl")
-	if err != nil {
-		t.Fatalf("uploadOutputFile returned error: %v", err)
-	}
-	if size != 42 {
-		t.Fatalf("size = %d, want 42", size)
-	}
-	if mock.calls != 3 {
-		t.Fatalf("expected 3 Store calls (1 initial + 2 retries), got %d", mock.calls)
-	}
-}
-
-func TestUploadOutputFile_ExhaustsRetries(t *testing.T) {
-	cfg := config.NewConfig()
-	cfg.WorkDir = t.TempDir()
-	cfg.UploadRetry = config.RetryConfig{
-		MaxRetries:     2,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     10 * time.Millisecond,
-	}
-
-	mock := &failNTimesFilesClient{failCount: 100}
-	p := mustNewProcessor(t, cfg, &clientset.Clientset{File: mock})
-
-	jobInfo := setupJobWithOutputFile(t, cfg, "job-exhaust", "tenant-1")
-	ctx := testLoggerCtx()
-
-	_, err := p.uploadOutputFile(ctx, jobInfo, "output.jsonl")
-	if err == nil {
-		t.Fatalf("expected error after exhausting retries")
-	}
-	if mock.calls != 3 {
-		t.Fatalf("expected 3 Store calls (1 initial + 2 retries), got %d", mock.calls)
-	}
-}
-
-func TestUploadOutputFile_ContextCancelledDuringRetry(t *testing.T) {
-	cfg := config.NewConfig()
-	cfg.WorkDir = t.TempDir()
-	cfg.UploadRetry = config.RetryConfig{
-		MaxRetries:     5,
-		InitialBackoff: 1 * time.Hour,
-		MaxBackoff:     1 * time.Hour,
-	}
-
-	mock := &failNTimesFilesClient{failCount: 100}
-	p := mustNewProcessor(t, cfg, &clientset.Clientset{File: mock})
-
-	jobInfo := setupJobWithOutputFile(t, cfg, "job-cancel", "tenant-1")
-	ctx, cancel := context.WithCancel(testLoggerCtx())
-	cancel()
-
-	_, err := p.uploadOutputFile(ctx, jobInfo, "output.jsonl")
-	if err == nil {
-		t.Fatalf("expected error on cancelled context")
-	}
-}
-
 func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 	ctx := testLoggerCtx()
 	cfg := config.NewConfig()
@@ -367,7 +257,7 @@ func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
-	// Setup job dir manually instead of using setupJobWithOutputFile which creates a new DB
+	// Setup job dir manually to reuse the pre-seeded DB client
 	jobDir, _ := p.jobRootDir(jobID, tenantID)
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)

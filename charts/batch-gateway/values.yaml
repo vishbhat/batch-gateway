@@ -72,6 +72,12 @@ global:
       prefix: ""
       usePathStyle: false
       autoCreateBucket: false
+    # Retry configuration for file storage operations (Store, Retrieve, Delete).
+    # Set maxRetries to 0 to disable. Useful for S3 transient errors.
+    retry:
+      maxRetries: 3
+      initialBackoff: "1s"
+      maxBackoff: "10s"
 
 # API Server configuration
 apiserver:
@@ -314,10 +320,6 @@ processor:
       #   apiKeyName: "gateway-b-api-key"
       #   requestTimeout: "2m"
       #   maxRetries: 1
-    uploadRetry:
-      maxRetries: 3
-      initialBackoff: "1s"
-      maxBackoff: "10s"
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
     # Enable pprof profiling endpoints on the observability server (/debug/pprof/)

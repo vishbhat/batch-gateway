@@ -30,6 +30,7 @@ import (
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/ptr"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 	inference "github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"gopkg.in/yaml.v3"
 )
@@ -81,9 +82,6 @@ type ProcessorConfig struct {
 	// Lookup order: ModelGateways[model] -> ModelGateways["default"].
 	ModelGateways map[string]ModelGatewayConfig `yaml:"model_gateways"`
 
-	// UploadRetry controls retry behaviour when uploading output files to shared storage.
-	UploadRetry RetryConfig `yaml:"upload_retry"`
-
 	// DefaultOutputExpirationSeconds is the default TTL for batch output/error files in seconds.
 	// Used as fallback when the user does not provide output_expires_after in POST /v1/batches.
 	// 0 means no expiration (keep until explicitly deleted).
@@ -110,13 +108,8 @@ type ProcessorConfig struct {
 		Type     string          `yaml:"type"`
 		FSConfig fsclient.Config `yaml:"fs"`
 		S3Config s3client.Config `yaml:"s3"`
+		Retry    retry.Config    `yaml:"retry"`
 	} `yaml:"file_client"`
-}
-
-type RetryConfig struct {
-	MaxRetries     int           `yaml:"max_retries"`
-	InitialBackoff time.Duration `yaml:"initial_backoff"`
-	MaxBackoff     time.Duration `yaml:"max_backoff"`
 }
 
 // DefaultModelGatewayKey is the reserved key in ModelGateways that acts as
@@ -234,8 +227,14 @@ func NewConfig() *ProcessorConfig {
 			Type     string          `yaml:"type"`
 			FSConfig fsclient.Config `yaml:"fs"`
 			S3Config s3client.Config `yaml:"s3"`
+			Retry    retry.Config    `yaml:"retry"`
 		}{
 			Type: "mock",
+			Retry: retry.Config{
+				MaxRetries:     3,
+				InitialBackoff: 1 * time.Second,
+				MaxBackoff:     10 * time.Second,
+			},
 		},
 		ModelGateways: map[string]ModelGatewayConfig{
 			DefaultModelGatewayKey: {
@@ -245,11 +244,6 @@ func NewConfig() *ProcessorConfig {
 				InitialBackoff: ptr.To(1 * time.Second),
 				MaxBackoff:     ptr.To(60 * time.Second),
 			},
-		},
-		UploadRetry: RetryConfig{
-			MaxRetries:     3,
-			InitialBackoff: 1 * time.Second,
-			MaxBackoff:     10 * time.Second,
 		},
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
@@ -355,17 +349,8 @@ func (c *ProcessorConfig) Validate() error {
 		}
 	}
 
-	if c.UploadRetry.MaxRetries < 0 {
-		return fmt.Errorf("upload_retry.max_retries must be >= 0")
-	}
-	if c.UploadRetry.InitialBackoff <= 0 {
-		return fmt.Errorf("upload_retry.initial_backoff must be > 0")
-	}
-	if c.UploadRetry.MaxBackoff <= 0 {
-		return fmt.Errorf("upload_retry.max_backoff must be > 0")
-	}
-	if c.UploadRetry.MaxBackoff < c.UploadRetry.InitialBackoff {
-		return fmt.Errorf("upload_retry.max_backoff must be >= upload_retry.initial_backoff")
+	if err := c.FileClientCfg.Retry.Validate(); err != nil {
+		return fmt.Errorf("file_client.retry: %w", err)
 	}
 
 	if c.ProgressTTLSeconds <= 0 {

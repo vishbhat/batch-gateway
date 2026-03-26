@@ -17,6 +17,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
@@ -929,11 +930,6 @@ func TestFinalizeJob_Success(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	cfg.UploadRetry = config.RetryConfig{
-		MaxRetries:     1,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     1 * time.Millisecond,
-	}
 
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
 
@@ -979,11 +975,6 @@ func TestFinalizeJob_Success(t *testing.T) {
 func TestFinalizeJob_UploadFailure(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.UploadRetry = config.RetryConfig{
-		MaxRetries:     0,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     1 * time.Millisecond,
-	}
 
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
 	env.p.files.storage = &failNTimesFilesClient{failCount: 100}
@@ -1085,11 +1076,6 @@ func TestFinalizeJob_EmptyOutputFile_OutputFileIDOmitted(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	cfg.UploadRetry = config.RetryConfig{
-		MaxRetries:     0,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     1 * time.Millisecond,
-	}
 
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
 
@@ -1141,11 +1127,6 @@ func TestFinalizeJob_EmptyErrorFile_ErrorFileIDOmitted(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	cfg.UploadRetry = config.RetryConfig{
-		MaxRetries:     0,
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     1 * time.Millisecond,
-	}
 
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
 

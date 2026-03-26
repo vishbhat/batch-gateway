@@ -40,8 +40,7 @@ func main() {
 	defer klog.Flush()
 
 	// graceful shutdown
-	parentCtx := context.Background()
-	ctx, cancel := interrupt.ContextWithSignal(parentCtx)
+	ctx, cancel := interrupt.ContextWithSignal(context.Background())
 	defer cancel()
 
 	// initialize OpenTelemetry tracing
