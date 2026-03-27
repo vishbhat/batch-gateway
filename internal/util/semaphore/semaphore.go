@@ -21,6 +21,7 @@ package semaphore
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"k8s.io/klog/v2"
 )
@@ -49,17 +50,22 @@ type Semaphore interface {
 var _ Semaphore = (*semaphore)(nil)
 
 type semaphore struct {
-	tokens chan struct{}
+	tokens            chan struct{}
+	onDoubleRelease   func()    // immutable after construction
+	doubleReleaseOnce sync.Once // sync.Once.Do is self-synchronizing
 }
 
 // New creates a new semaphore with the specified capacity.
 // The capacity determines the maximum number of concurrent acquisitions.
-func New(capacity int) (Semaphore, error) {
+// onDoubleRelease, if non-nil, is called at most once when Release is called
+// on an already-empty semaphore (more releases than acquires).
+func New(capacity int, onDoubleRelease func()) (Semaphore, error) {
 	if capacity <= 0 {
 		return nil, ErrCap
 	}
 	return &semaphore{
-		tokens: make(chan struct{}, capacity),
+		tokens:          make(chan struct{}, capacity),
+		onDoubleRelease: onDoubleRelease,
 	}, nil
 }
 
@@ -78,8 +84,10 @@ func (s *semaphore) Release() {
 	select {
 	case <-s.tokens:
 	default:
-		// This should not happen in correct usage.
-		klog.Background().Error(nil, "CRITICAL: token channel is full, skipping release")
+		klog.Background().Error(nil, "CRITICAL: semaphore double-release detected (more releases than acquires)")
+		if s.onDoubleRelease != nil {
+			s.doubleReleaseOnce.Do(s.onDoubleRelease)
+		}
 	}
 }
 
