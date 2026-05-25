@@ -35,6 +35,7 @@ import (
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
+	asyncprod "github.com/llm-d-incubation/llm-d-async/producer"
 )
 
 // endpointLimit pairs an adaptive semaphore with its AIMD controller for a
@@ -69,10 +70,11 @@ type Processor struct {
 	poller  *Poller
 	updater *StatusUpdater
 
-	event     db.BatchEventChannelClient // cancel-event subscription
-	inflight  db.InFlightClient          // in-flight job tracking for orphan recovery
-	inference *inference.GatewayResolver // model → gateway routing
-	files     *fileManager
+	event          db.BatchEventChannelClient    // cancel-event subscription
+	inflight       db.InFlightClient             // in-flight job tracking for orphan recovery
+	inference      *inference.GatewayResolver    // model → gateway routing
+	files          *fileManager
+	asyncProducers map[string]asyncprod.Producer // pool name → producer; nil in sync mode
 }
 
 func NewProcessor(
@@ -90,14 +92,15 @@ func NewProcessor(
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
 	return &Processor{
-		cfg:         cfg,
-		processorID: processorID,
-		poller:      poller,
-		updater:     updater,
-		event:       clients.Event,
-		inflight:    clients.InFlight,
-		inference:   clients.Inference,
-		files:       newFileManager(clients.File, clients.FileDB),
+		cfg:            cfg,
+		processorID:    processorID,
+		poller:         poller,
+		updater:        updater,
+		event:          clients.Event,
+		inflight:       clients.InFlight,
+		inference:      clients.Inference,
+		files:          newFileManager(clients.File, clients.FileDB),
+		asyncProducers: clients.AsyncProducers,
 	}, nil
 }
 

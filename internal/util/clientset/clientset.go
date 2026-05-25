@@ -37,6 +37,7 @@ import (
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
+	asyncprod "github.com/llm-d-incubation/llm-d-async/producer"
 )
 
 // Clientset holds all clients.
@@ -49,6 +50,9 @@ type Clientset struct {
 	Status    dbapi.BatchStatusClient
 	InFlight  dbapi.InFlightClient
 	Inference *inference.GatewayResolver
+	// AsyncProducers maps InferencePoolName to a Producer. Non-nil only when
+	// DispatchMode == "async". Callers must call Close() on each producer.
+	AsyncProducers map[string]asyncprod.Producer
 }
 
 // NewFSFileClient creates a filesystem-based file storage client.
@@ -150,6 +154,7 @@ type clientsetConfig struct {
 	exchangeRedisCfg  *uredis.RedisClientConfig
 	inferenceGlobal   *inference.GatewayClientConfig
 	inferencePerModel map[string]inference.GatewayClientConfig
+	asyncProducers    map[string]asyncprod.Producer
 }
 
 // WithDB enables creation of batch and file database clients.
@@ -181,6 +186,11 @@ func WithPerModelInference(cfgs map[string]inference.GatewayClientConfig) Option
 		copied[k] = v
 	}
 	return func(c *clientsetConfig) { c.inferencePerModel = copied }
+}
+
+// WithAsyncProducers attaches pre-built async producers (one per pool) to the Clientset.
+func WithAsyncProducers(producers map[string]asyncprod.Producer) Option {
+	return func(c *clientsetConfig) { c.asyncProducers = producers }
 }
 
 // NewClientset creates the clients specified by the given options.
@@ -282,6 +292,11 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 		cs.Inference = resolver
 	}
 
+	if len(cfg.asyncProducers) > 0 {
+		cs.AsyncProducers = cfg.asyncProducers
+		logger.Info("Async producers attached", "count", len(cfg.asyncProducers))
+	}
+
 	return cs, nil
 }
 
@@ -319,6 +334,11 @@ func (cs *Clientset) Close() error {
 	}
 	if cs.InFlight != nil {
 		if err := cs.InFlight.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, p := range cs.AsyncProducers {
+		if err := p.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}

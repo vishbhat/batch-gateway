@@ -274,6 +274,24 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 	// userCancelCtx.Err() to choose the right error code (errExpired vs errCancelled).
 	tenantID := params.jobInfo.TenantID
 
+	// In async mode, create one shared dispatcher for the entire job and start
+	// per-pool collectors before launching model goroutines.
+	var asyncDisp *asyncDispatcher
+	if p.cfg.IsAsync() {
+		asyncDisp = newAsyncDispatcher(
+			p.asyncProducers,
+			writers,
+			progress,
+			p.cfg,
+			params.jobInfo.JobID,
+			tenantID,
+			sloCtx,
+			userCancelCtx,
+			logger,
+		)
+		asyncDisp.startCollectors(requestAbortCtx, p.cfg.DistinctPoolNames())
+	}
+
 	for safeModelID, modelID := range modelMap.SafeToModel {
 		// Ordering guarantee: processModel returns → requestAbortFn → errCh send.
 		// This ensures the first real error reaches errCh before any context.Canceled
@@ -290,6 +308,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 				progress,
 				passThroughHeaders,
 				tenantID,
+				asyncDisp,
 			)
 			// Abort all sibling models when any model hits a fatal I/O error
 			// (e.g. output file write failure). modelErr is only set for local
@@ -312,6 +331,13 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 		if err := <-errCh; err != nil && firstErr == nil {
 			firstErr = err
 		}
+	}
+
+	// In async mode, signal submissions done and wait for all results to be collected
+	// before flushing output. This ensures output files are complete before upload.
+	if asyncDisp != nil {
+		asyncDisp.signalSubmissionsDone()
+		<-asyncDisp.collectDone
 	}
 
 	// Push final progress to Redis so the last throttled update doesn't
@@ -397,6 +423,7 @@ func (p *Processor) processModel(
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
 	tenantID string,
+	asyncDisp *asyncDispatcher,
 ) error {
 	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
 	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
@@ -409,7 +436,11 @@ func (p *Processor) processModel(
 
 	logger.V(logging.INFO).Info("Processing requests for a model", "numEntries", len(entries))
 
-	// Resolve the per-endpoint adaptive semaphore and AIMD controller for this
+	if asyncDisp != nil {
+		return p.processModelAsync(requestAbortCtx, sloCtx, userCancelCtx, inputFile, entries, modelID, passThroughHeaders, writers, progress, asyncDisp)
+	}
+
+	// Sync path: resolve the per-endpoint adaptive semaphore and AIMD controller for this
 	// model. Models sharing the same inference endpoint share the same pair.
 	// ClientFor can return nil after gateway config changes between ingestion and
 	// execution, or during recovery when model_map/plan files predate the current
@@ -611,6 +642,64 @@ dispatch:
 
 	siblingAbort := returnErr == nil && requestAbortCtx.Err() != nil
 	logger.V(logging.INFO).Info("Finished processing model", "numEntries", len(entries), "hasError", returnErr != nil, "siblingAbort", siblingAbort)
+	return returnErr
+}
+
+// processModelAsync handles the async dispatch path for a single model.
+// Submissions are sequential (no semaphores — the dispatcher controls flow downstream).
+// Results are collected by the shared asyncDispatcher's per-pool goroutines.
+func (p *Processor) processModelAsync(
+	requestAbortCtx context.Context,
+	sloCtx context.Context,
+	userCancelCtx context.Context,
+	inputFile *os.File,
+	entries []planEntry,
+	modelID string,
+	passThroughHeaders map[string]string,
+	writers *outputWriters,
+	progress *executionProgress,
+	asyncDisp *asyncDispatcher,
+) error {
+	logger := logr.FromContextOrDiscard(requestAbortCtx)
+
+	var dispatchedCount int
+	for i, entry := range entries {
+		if requestAbortCtx.Err() != nil {
+			break
+		}
+		asyncDisp.submitRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders)
+		dispatchedCount = i + 1
+	}
+
+	// Drain entries that were not submitted due to context cancellation.
+	// Submitted entries are handled by the shared collector goroutines.
+	undispatched := entries[dispatchedCount:]
+	var returnErr error
+	switch {
+	case errors.Is(sloCtx.Err(), context.DeadlineExceeded):
+		if len(undispatched) > 0 {
+			logger.V(logging.INFO).Info("SLO expired: draining undispatched async entries", "count", len(undispatched))
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
+				batch_types.ErrCodeBatchExpired)
+		}
+		returnErr = errExpired
+	case userCancelCtx.Err() != nil:
+		if len(undispatched) > 0 {
+			logger.V(logging.INFO).Info("Cancelled: draining undispatched async entries", "count", len(undispatched))
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
+				batch_types.ErrCodeBatchCancelled)
+		}
+		returnErr = errCancelled
+	default:
+		if requestAbortCtx.Err() != nil && len(undispatched) > 0 {
+			logger.V(logging.INFO).Info("Sibling abort: draining undispatched async entries", "count", len(undispatched))
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
+				batch_types.ErrCodeBatchFailed)
+		}
+	}
+
+	logger.V(logging.INFO).Info("Finished submitting async requests for model",
+		"numEntries", len(entries), "submitted", dispatchedCount)
 	return returnErr
 }
 

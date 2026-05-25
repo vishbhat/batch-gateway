@@ -252,6 +252,41 @@ func (c *ProcessorConfig) InferenceObjectiveFor(modelID string) string {
 	return ""
 }
 
+// InferencePoolNameFor returns the async dispatch pool name for modelID.
+// Returns "" when the model is not configured or no pool is set.
+func (c *ProcessorConfig) InferencePoolNameFor(modelID string) string {
+	if c.GlobalInferenceGateway != nil {
+		return c.GlobalInferenceGateway.InferencePoolName
+	}
+	if gw, ok := c.ModelGateways[modelID]; ok {
+		return gw.InferencePoolName
+	}
+	return ""
+}
+
+// DistinctPoolNames returns the deduplicated set of InferencePoolName values
+// across all configured gateways. Only meaningful when DispatchMode == "async".
+func (c *ProcessorConfig) DistinctPoolNames() []string {
+	seen := make(map[string]struct{})
+	var result []string
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			result = append(result, name)
+		}
+	}
+	if c.GlobalInferenceGateway != nil {
+		add(c.GlobalInferenceGateway.InferencePoolName)
+	}
+	for _, gw := range c.ModelGateways {
+		add(gw.InferencePoolName)
+	}
+	return result
+}
+
 // LoadFromYAML loads the configuration from a YAML file.
 // Callers should start from NewConfig() so that concurrency/AIMD defaults
 // are already set; YAML values then override only what is explicitly specified.

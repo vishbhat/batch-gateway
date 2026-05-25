@@ -20,6 +20,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -39,6 +40,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
+	asyncprod "github.com/llm-d-incubation/llm-d-async/producer"
 )
 
 func main() {
@@ -296,6 +298,14 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 	if len(resolved.PerModel) > 0 {
 		opts = append(opts, clientset.WithPerModelInference(resolved.PerModel))
 	}
+	if cfg.IsAsync() {
+		producers, err := buildAsyncProducers(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build async producers: %w", err)
+		}
+		opts = append(opts, clientset.WithAsyncProducers(producers))
+	}
+
 	clients, err := clientset.NewClientset(ctx, ucom.ComponentProcessor, opts...)
 	if err != nil {
 		logger.Error(err, "Failed to create clients")
@@ -307,13 +317,66 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		logger.V(logging.INFO).Info("Processor clients initialized",
 			"mode", "global",
 			"gatewayURL", resolved.Global.URL,
-			"fileClientType", cfg.FileClientCfg.Type)
+			"fileClientType", cfg.FileClientCfg.Type,
+			"dispatchMode", cfg.DispatchMode)
 	} else {
 		logger.V(logging.INFO).Info("Processor clients initialized",
 			"mode", "per-model",
 			"numModelGateways", len(resolved.PerModel),
-			"fileClientType", cfg.FileClientCfg.Type)
+			"fileClientType", cfg.FileClientCfg.Type,
+			"dispatchMode", cfg.DispatchMode)
 	}
 
 	return clients, nil
+}
+
+// buildAsyncProducers creates one Redis sorted-set producer per distinct InferencePoolName.
+// The Redis URL is read from the mounted secret at runtime.
+func buildAsyncProducers(ctx context.Context, cfg *config.ProcessorConfig) (map[string]asyncprod.Producer, error) {
+	logger := logr.FromContextOrDiscard(ctx)
+
+	redisURL := cfg.AsyncDispatchConfig.RedisURL
+	if redisURL == "" {
+		url, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
+		if err != nil {
+			return nil, fmt.Errorf("async dispatch requires Redis URL: %w", err)
+		}
+		redisURL = url
+	}
+
+	poolNames := cfg.DistinctPoolNames()
+	producers := make(map[string]asyncprod.Producer, len(poolNames))
+	for _, poolName := range poolNames {
+		p, err := asyncprod.NewRedisSortedSetProducer(asyncprod.RedisSortedSetConfig{
+			RedisURL:         redisURL,
+			RequestQueueName: config.RequestQueueName(poolName),
+			ResultQueueName:  config.ResultQueueName(poolName),
+		})
+		if err != nil {
+			for _, existing := range producers {
+				_ = existing.Close()
+			}
+			return nil, fmt.Errorf("failed to create producer for pool %q: %w", poolName, err)
+		}
+
+		// Validate connectivity with a quick non-blocking GetResult call.
+		// This ensures Redis is reachable before we start processing jobs.
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err = p.GetResult(pingCtx)
+		cancel()
+		// We expect a timeout or "no results" — any other error indicates connectivity issues.
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			for _, existing := range producers {
+				_ = existing.Close()
+			}
+			_ = p.Close()
+			return nil, fmt.Errorf("producer connectivity check failed for pool %q: %w", poolName, err)
+		}
+
+		producers[poolName] = p
+		logger.V(logging.INFO).Info("Async producer created and validated", "pool", poolName,
+			"requestQueue", config.RequestQueueName(poolName),
+			"resultQueue", config.ResultQueueName(poolName))
+	}
+	return producers, nil
 }

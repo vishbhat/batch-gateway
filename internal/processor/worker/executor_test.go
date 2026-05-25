@@ -815,7 +815,7 @@ func TestProcessModel_Success(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx(t)
-	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "", nil)
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
@@ -877,7 +877,7 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(baseCtx)
 	cancel()
 
-	err := env.p.processModel(ctx, baseCtx, context.Background(), ctx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	err := env.p.processModel(ctx, baseCtx, context.Background(), ctx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "", nil)
 	if !errors.Is(err, errCancelled) {
 		t.Fatalf("expected errCancelled, got: %v", err)
 	}
@@ -942,7 +942,7 @@ func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 	}
 
 	ctx := testLoggerCtx(t)
-	modelErr := env.p.processModel(ctx, ctx, ctx, userCancelCtx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	modelErr := env.p.processModel(ctx, ctx, ctx, userCancelCtx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "", nil)
 	if !errors.Is(modelErr, errCancelled) {
 		t.Fatalf("expected errCancelled from processModel, got: %v", modelErr)
 	}
@@ -1024,7 +1024,7 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx(t)
-	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "", nil)
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
@@ -1074,7 +1074,7 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+		done <- env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "", nil)
 	}()
 
 	<-started
@@ -1125,7 +1125,7 @@ func TestProcessModel_SiblingAbort_ReturnsNil(t *testing.T) {
 	requestAbortCtx, requestAbortFn := context.WithCancel(mainCtx)
 	requestAbortFn() // simulate sibling model calling requestAbortFn
 
-	err := env.p.processModel(requestAbortCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	err := env.p.processModel(requestAbortCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "", nil)
 	// requestAbortCtx cancelled, but no SLO / user-cancel / SIGTERM → nil, not errShutdown
 	if err != nil {
 		t.Fatalf("expected nil when only requestAbortCtx is cancelled (sibling abort), got: %v", err)
@@ -3343,7 +3343,7 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		}
 
 		ctx := testLoggerCtx(t)
-		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID, nil)
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
@@ -3502,7 +3502,7 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		}
 
 		ctx := testLoggerCtx(t)
-		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID, nil)
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
@@ -3621,10 +3621,10 @@ func TestProcessModel_AIMDEndpointIsolation(t *testing.T) {
 	}
 	progress := &executionProgress{total: 4, updater: updater, jobID: jobID}
 
-	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, tenantID)
+	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, tenantID, nil)
 
 	// Process m2 (200s) — should NOT affect m2's endpoint AIMD.
-	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m2", "m2", writers, progress, nil, tenantID)
+	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m2", "m2", writers, progress, nil, tenantID, nil)
 
 	limitA := p.endpointLimits[clientA].aimd.Limit()
 	limitB := p.endpointLimits[clientB].aimd.Limit()
@@ -3686,7 +3686,7 @@ func TestProcessModel_EndpointLimitNil_DrainsAsModelNotFound(t *testing.T) {
 	}
 
 	ctx := testLoggerCtx(t)
-	err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+	err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID, nil)
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
