@@ -211,12 +211,12 @@ func doTestRetryExhaustion(t *testing.T) {
 func detectGIEDeployed(t *testing.T) bool {
 	t.Helper()
 
-	out, err := exec.Command("kubectl", "get", "deployments",
+	out, err := exec.Command(testKubeCLI, "get", "deployments",
 		"-n", testNamespace,
 		"-o", "name",
 	).CombinedOutput()
 	if err != nil {
-		t.Logf("kubectl get deployments failed: %v", err)
+		t.Logf("%s get deployments failed: %v", testKubeCLI, err)
 		return false
 	}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -323,14 +323,14 @@ func doTestBatchCompletionThroughEPP(t *testing.T) {
 func getEPPLogsSince(t *testing.T, deployment, sinceTime string) string {
 	t.Helper()
 
-	out, err := exec.Command("kubectl", "logs",
+	out, err := exec.Command(testKubeCLI, "logs",
 		fmt.Sprintf("deployment/%s", deployment),
 		"-n", testNamespace,
 		"-c", "epp",
 		fmt.Sprintf("--since-time=%s", sinceTime),
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl logs for %s failed: %v\n%s", deployment, err, out)
+		t.Fatalf("%s logs for %s failed: %v\n%s", testKubeCLI, deployment, err, out)
 	}
 	return string(out)
 }
@@ -415,7 +415,7 @@ func scrapeEPPMetrics(t *testing.T, deployment string) string {
 
 	ensureEPPMetricsCurlPod(t)
 
-	out, err := exec.Command("kubectl", "exec",
+	out, err := exec.Command(testKubeCLI, "exec",
 		"-n", testNamespace,
 		eppMetricsCurlPod,
 		"--",
@@ -432,7 +432,7 @@ func scrapeEPPMetrics(t *testing.T, deployment string) string {
 func ensureEPPMetricsCurlPod(t *testing.T) {
 	t.Helper()
 
-	if phaseOut, err := exec.Command("kubectl", "get", "pod",
+	if phaseOut, err := exec.Command(testKubeCLI, "get", "pod",
 		eppMetricsCurlPod,
 		"-n", testNamespace,
 		"-o", "jsonpath={.status.phase}",
@@ -441,7 +441,7 @@ func ensureEPPMetricsCurlPod(t *testing.T) {
 	} else {
 		phase := strings.TrimSpace(string(phaseOut))
 		if phase != "Running" && phase != "Pending" {
-			out, deleteErr := exec.Command("kubectl", "delete", "pod",
+			out, deleteErr := exec.Command(testKubeCLI, "delete", "pod",
 				eppMetricsCurlPod,
 				"-n", testNamespace,
 				"--ignore-not-found",
@@ -453,7 +453,7 @@ func ensureEPPMetricsCurlPod(t *testing.T) {
 		}
 	}
 
-	waitOut, err := exec.Command("kubectl", "wait",
+	waitOut, err := exec.Command(testKubeCLI, "wait",
 		"--for=condition=Ready",
 		fmt.Sprintf("pod/%s", eppMetricsCurlPod),
 		"-n", testNamespace,
@@ -480,7 +480,7 @@ spec:
     command: ["sleep", "3600"]
 `, eppMetricsCurlPod, testNamespace)
 
-	cmd := exec.Command("kubectl", "create", "-f", "-")
+	cmd := exec.Command(testKubeCLI, "create", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifest)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -491,7 +491,7 @@ spec:
 func deleteEPPMetricsCurlPod(t *testing.T) {
 	t.Helper()
 
-	out, err := exec.Command("kubectl", "delete", "pod",
+	out, err := exec.Command(testKubeCLI, "delete", "pod",
 		eppMetricsCurlPod,
 		"-n", testNamespace,
 		"--ignore-not-found",
@@ -628,13 +628,13 @@ func getProcessorLogsSince(t *testing.T, sinceTime string) string {
 	t.Helper()
 
 	deployment := fmt.Sprintf("%s-processor", testHelmRelease)
-	out, err := exec.Command("kubectl", "logs",
+	out, err := exec.Command(testKubeCLI, "logs",
 		fmt.Sprintf("deployment/%s", deployment),
 		"-n", testNamespace,
 		fmt.Sprintf("--since-time=%s", sinceTime),
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl logs for %s failed: %v\n%s", deployment, err, out)
+		t.Fatalf("%s logs for %s failed: %v\n%s", testKubeCLI, deployment, err, out)
 	}
 	return string(out)
 }

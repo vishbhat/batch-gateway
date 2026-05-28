@@ -72,12 +72,12 @@ func doTestPodDeleteMidJob(t *testing.T) {
 	// Delete the processor pod. Kubelet delivers SIGTERM and waits
 	// terminationGracePeriodSeconds (60s) before SIGKILL.
 	t.Log("deleting processor pod...")
-	out, err := exec.Command("kubectl", "delete", "pod",
+	out, err := exec.Command(testKubeCLI, "delete", "pod",
 		"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease),
 		"-n", testNamespace,
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl delete pod failed: %v\n%s", err, out)
+		t.Fatalf("%s delete pod failed: %v\n%s", testKubeCLI, err, out)
 	}
 	t.Logf("processor pod delete issued: %s", strings.TrimSpace(string(out)))
 
@@ -129,12 +129,12 @@ func doTestRollingRestartReEnqueue(t *testing.T) {
 	t.Logf("triggering rolling restart of %s...", deployment)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "kubectl", "rollout", "restart",
+	out, err := exec.CommandContext(ctx, testKubeCLI, "rollout", "restart",
 		fmt.Sprintf("deployment/%s", deployment),
 		"-n", testNamespace,
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl rollout restart failed: %v\n%s", err, out)
+		t.Fatalf("%s rollout restart failed: %v\n%s", testKubeCLI, err, out)
 	}
 	t.Logf("rollout restart triggered: %s", strings.TrimSpace(string(out)))
 

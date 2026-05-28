@@ -95,7 +95,7 @@ func newClient() *openai.Client {
 func newClientForTenant(tenant string) *openai.Client {
 	c := openai.NewClient(
 		option.WithBaseURL(testApiserverURL+"/v1/"),
-		option.WithAPIKey("unused"),
+		option.WithAPIKey(testBearerToken),
 		option.WithHeader(testTenantHeader, tenant),
 		option.WithHTTPClient(testHTTPClient),
 	)
@@ -630,7 +630,7 @@ func waitForReady(t *testing.T, url string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		resp, err := http.Get(url + "/ready")
+		resp, err := testHTTPClient.Get(url + "/ready")
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {

@@ -49,13 +49,13 @@ func expireInPostgresql(t *testing.T, table, id string) {
 
 	sql := fmt.Sprintf("UPDATE %s SET expiry = 1 WHERE id = '%s'", table, id)
 	cmd := fmt.Sprintf(`PGPASSWORD="$(cat "$POSTGRES_PASSWORD_FILE")" psql -U postgres -d postgres -c %q`, sql)
-	out, err := exec.Command("kubectl", "exec",
+	out, err := exec.Command(testKubeCLI, "exec",
 		fmt.Sprintf("%s-0", testPostgresqlRelease),
 		"-n", testNamespace,
 		"--", "bash", "-c", cmd,
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl exec psql failed: %v\n%s", err, out)
+		t.Fatalf("%s exec psql failed: %v\n%s", testKubeCLI, err, out)
 	}
 	t.Logf("expired %s/%s in PostgreSQL: %s", table, id, strings.TrimSpace(string(out)))
 }
@@ -77,13 +77,13 @@ func expireInRedis(t *testing.T, table, id string) {
 	}
 
 	cmd := fmt.Sprintf("%s HSET %s expiry 1", cliTool, key)
-	out, err := exec.Command("kubectl", "exec",
+	out, err := exec.Command(testKubeCLI, "exec",
 		fmt.Sprintf("%s-%s", testRedisRelease, podSuffix),
 		"-n", testNamespace,
 		"--", "bash", "-c", cmd,
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl exec %s failed: %v\n%s", cliTool, err, out)
+		t.Fatalf("%s exec %s failed: %v\n%s", testKubeCLI, cliTool, err, out)
 	}
 	t.Logf("expired %s/%s via %s: %s", table, id, cliTool, strings.TrimSpace(string(out)))
 }

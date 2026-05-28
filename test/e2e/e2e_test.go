@@ -27,10 +27,13 @@ import (
 )
 
 var (
-	testApiserverURL      = getEnvOrDefault("TEST_APISERVER_URL", "https://localhost:8000")
-	testApiserverObsURL   = getEnvOrDefault("TEST_APISERVER_OBS_URL", "http://localhost:8081")
-	testProcessorObsURL   = getEnvOrDefault("TEST_PROCESSOR_OBS_URL", "http://localhost:9090")
-	testJaegerURL         = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
+	testClusterServer     = getEnvOrDefault("TEST_CLUSTER_SERVER", "https://api.ci-ln-blf8lh2-76ef8.aws-4.ci.openshift.org:6443")
+	testKubeCLI           = getEnvOrDefault("TEST_KUBE_CLI", "oc")
+	testBearerToken       = getEnvOrDefault("TEST_BEARER_TOKEN", "unused")
+	testApiserverURL      = getEnvOrDefault("TEST_APISERVER_URL", "https://batch-gateway-apiserver-batch-api.apps.ci-ln-blf8lh2-76ef8.aws-4.ci.openshift.org")
+	testApiserverObsURL   = getEnvOrDefault("TEST_APISERVER_OBS_URL", "https://batch-gateway-apiserver-batch-api.apps.ci-ln-blf8lh2-76ef8.aws-4.ci.openshift.org")
+	testProcessorObsURL   = getEnvOrDefault("TEST_PROCESSOR_OBS_URL", "https://batch-gateway-apiserver-batch-api.apps.ci-ln-blf8lh2-76ef8.aws-4.ci.openshift.org")
+	testJaegerURL         = getEnvOrDefault("TEST_JAEGER_URL", "https://batch-gateway-apiserver-batch-api.apps.ci-ln-blf8lh2-76ef8.aws-4.ci.openshift.org")
 	testTenantHeader      = getEnvOrDefault("TEST_TENANT_HEADER", "X-MaaS-Username")
 	testTenantID          = getEnvOrDefault("TEST_TENANT_ID", "default")
 	testNamespace         = getEnvOrDefault("TEST_NAMESPACE", "default")
@@ -89,8 +92,8 @@ var (
 )
 
 func TestE2E(t *testing.T) {
-	if out, err := exec.Command("kubectl", "cluster-info").CombinedOutput(); err != nil {
-		t.Logf("kubectl not available, some checks will be skipped: %v\n%s", err, out)
+	if out, err := exec.Command(testKubeCLI, "cluster-info", "--server", testClusterServer).CombinedOutput(); err != nil {
+		t.Logf("%s not available or cluster unreachable (%s), some checks will be skipped: %v\n%s", testKubeCLI, testClusterServer, err, out)
 	} else {
 		testKubectlAvailable = true
 	}

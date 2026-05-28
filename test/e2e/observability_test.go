@@ -153,13 +153,13 @@ func doTestRequestLogging(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Check apiserver logs for the request ID and tenant ID
-	out, err := exec.Command("kubectl", "logs",
+	out, err := exec.Command(testKubeCLI, "logs",
 		"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=apiserver", testHelmRelease),
 		"-n", testNamespace,
 		"--tail=500",
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl logs failed: %v\n%s", err, out)
+		t.Fatalf("%s logs failed: %v\n%s", testKubeCLI, err, out)
 	}
 
 	// Verify that a single log line contains the expected structured fields.

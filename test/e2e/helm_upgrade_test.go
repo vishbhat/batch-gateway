@@ -82,7 +82,7 @@ func testHelmUpgrade(t *testing.T) {
 		}
 		rollCtx, rollCancel := context.WithTimeout(context.Background(), helmCmdTimeout)
 		defer rollCancel()
-		out, err = exec.CommandContext(rollCtx, "kubectl", "rollout", "status",
+		out, err = exec.CommandContext(rollCtx, testKubeCLI, "rollout", "status",
 			fmt.Sprintf("deployment/%s-processor", testHelmRelease), "-n", testNamespace, "--timeout=180s",
 		).CombinedOutput()
 		if err != nil {
@@ -180,12 +180,12 @@ func kubectlGetConfigMap(t *testing.T, name string) string {
 
 	ctx, cancel := context.WithTimeout(context.Background(), helmCmdTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "kubectl", "get", "configmap", name,
+	out, err := exec.CommandContext(ctx, testKubeCLI, "get", "configmap", name,
 		"-n", testNamespace,
 		"-o", "jsonpath={.data['config\\.yaml']}",
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl get configmap failed: %v%s\n%s", err, execContextFailureHint(err), out)
+		t.Fatalf("%s get configmap failed: %v%s\n%s", testKubeCLI, err, execContextFailureHint(err), out)
 	}
 	result := string(out)
 	if strings.TrimSpace(result) == "" {
@@ -200,7 +200,7 @@ func waitForRollout(t *testing.T, deployment string) {
 	t.Logf("waiting for rollout of %s...", deployment)
 	ctx, cancel := context.WithTimeout(context.Background(), helmCmdTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "kubectl", "rollout", "status",
+	out, err := exec.CommandContext(ctx, testKubeCLI, "rollout", "status",
 		fmt.Sprintf("deployment/%s", deployment),
 		"-n", testNamespace,
 		"--timeout=180s",

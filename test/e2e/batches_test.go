@@ -138,13 +138,13 @@ func doTestBatchCancel(t *testing.T) {
 	// Best-effort check: look for cancellation log in processor pods.
 	// This is informational only — log tail depth and rotation make it unreliable.
 	if testKubectlAvailable {
-		out, err := exec.Command("kubectl", "logs",
+		out, err := exec.Command(testKubeCLI, "logs",
 			"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease),
 			"-n", testNamespace,
 			"--tail=500",
 		).CombinedOutput()
 		if err != nil {
-			t.Logf("kubectl logs failed (non-fatal): %v\n%s", err, out)
+			t.Logf("%s logs failed (non-fatal): %v\n%s", testKubeCLI, err, out)
 		} else {
 			logs := string(out)
 			if strings.Contains(logs, "Request cancelled for request_id") {
@@ -377,13 +377,13 @@ func doTestPassThroughHeaders(t *testing.T) {
 		t.Errorf("expected empty error_file_id, got %q", finalBatch.ErrorFileID)
 	}
 
-	out, err := exec.Command("kubectl", "logs",
+	out, err := exec.Command(testKubeCLI, "logs",
 		"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease),
 		"-n", testNamespace,
 		"--tail=500",
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl logs failed: %v\n%s", err, out)
+		t.Fatalf("%s logs failed: %v\n%s", testKubeCLI, err, out)
 	}
 
 	logs := string(out)

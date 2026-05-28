@@ -302,7 +302,7 @@ func doTestAIMDRecovery(t *testing.T) {
 			`{"spec":{"template":{"spec":{"containers":[{"name":"vllm-sim","args":["--model","%s","--port","8000","--time-to-first-token=10ms","--inter-token-latency=10ms","--v=5","--failure-injection-rate=100","--failure-types=rate_limit"]}]}}}}`,
 			testModelAIMD,
 		)
-		out, err := exec.CommandContext(ctx, "kubectl", "patch", "deployment", aimdSimDeployment,
+		out, err := exec.CommandContext(ctx, testKubeCLI, "patch", "deployment", aimdSimDeployment,
 			"-n", testNamespace,
 			"--type=strategic",
 			"-p", patch,
@@ -315,7 +315,7 @@ func doTestAIMDRecovery(t *testing.T) {
 
 		rollCtx, rollCancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer rollCancel()
-		out, err = exec.CommandContext(rollCtx, "kubectl", "rollout", "status",
+		out, err = exec.CommandContext(rollCtx, testKubeCLI, "rollout", "status",
 			"deployment/"+aimdSimDeployment, "-n", testNamespace, "--timeout=90s",
 		).CombinedOutput()
 		if err != nil {
@@ -406,7 +406,7 @@ func patchSimulatorFailureRate(t *testing.T, deployment, model string, rate int)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "kubectl", "patch", "deployment", deployment,
+	out, err := exec.CommandContext(ctx, testKubeCLI, "patch", "deployment", deployment,
 		"-n", testNamespace,
 		"--type=strategic",
 		"-p", patch,
