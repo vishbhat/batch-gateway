@@ -27,18 +27,19 @@ import (
 )
 
 var (
-	testClusterServer     = getEnvOrDefault("TEST_CLUSTER_SERVER", "https://api.ci-ln-blf8lh2-76ef8.aws-4.ci.openshift.org:6443")
+	testClusterServer     = getEnvOrDefault("TEST_CLUSTER_SERVER", "https://api.ci-ln-dg3i8dk-76ef8.aws-4.ci.openshift.org:6443")
 	testKubeCLI           = getEnvOrDefault("TEST_KUBE_CLI", "oc")
 	testBearerToken       = getEnvOrDefault("TEST_BEARER_TOKEN", "unused")
-	testApiserverURL      = getEnvOrDefault("TEST_APISERVER_URL", "https://batch-gateway-apiserver-batch-api.apps.ci-ln-blf8lh2-76ef8.aws-4.ci.openshift.org")
-	testApiserverObsURL   = getEnvOrDefault("TEST_APISERVER_OBS_URL", "https://batch-gateway-apiserver-batch-api.apps.ci-ln-blf8lh2-76ef8.aws-4.ci.openshift.org")
-	testProcessorObsURL   = getEnvOrDefault("TEST_PROCESSOR_OBS_URL", "https://batch-gateway-apiserver-batch-api.apps.ci-ln-blf8lh2-76ef8.aws-4.ci.openshift.org")
-	testJaegerURL         = getEnvOrDefault("TEST_JAEGER_URL", "https://batch-gateway-apiserver-batch-api.apps.ci-ln-blf8lh2-76ef8.aws-4.ci.openshift.org")
+	testApiserverURL      = getEnvOrDefault("TEST_APISERVER_URL", "https://llm-inference.apps.ci-ln-dg3i8dk-76ef8.aws-4.ci.openshift.org")
+	testApiserverObsURL   = getEnvOrDefault("TEST_APISERVER_OBS_URL", "http://localhost:8081")
+	testProcessorObsURL   = getEnvOrDefault("TEST_PROCESSOR_OBS_URL", "http://localhost:9091")
+	testJaegerURL         = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
 	testTenantHeader      = getEnvOrDefault("TEST_TENANT_HEADER", "X-MaaS-Username")
 	testTenantID          = getEnvOrDefault("TEST_TENANT_ID", "default")
 	testNamespace         = getEnvOrDefault("TEST_NAMESPACE", "default")
 	testHelmRelease       = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
 	testPostgresqlRelease = getEnvOrDefault("TEST_POSTGRESQL_RELEASE", "postgresql")
+	testPostgresqlDB      string
 	testRedisRelease      = getEnvOrDefault("TEST_REDIS_RELEASE", "redis")
 
 	// testDBClientType and testExchangeClientType are detected from Helm
@@ -100,7 +101,9 @@ func TestE2E(t *testing.T) {
 
 	testDBClientType = detectDBClientType(t)
 	testExchangeClientType = detectExchangeClientType(t)
-	t.Logf("DB client type: %s, exchange client type: %s", testDBClientType, testExchangeClientType)
+	testPostgresqlDB = detectPostgresqlDB(t)
+	t.Logf("DB client type: %s, exchange client type: %s, postgresql DB: %s",
+		testDBClientType, testExchangeClientType, testPostgresqlDB)
 
 	waitForReady(t, testApiserverObsURL, 30*time.Second)
 

@@ -35,8 +35,14 @@ import (
 // Neither test covers recoverStaleJobs (workdir scan on startup) or true
 // hard-crash (SIGKILL-only) scenarios.
 func testProcessorGracefulShutdown(t *testing.T) {
-	t.Run("PodDeleteMidJob", doTestPodDeleteMidJob)
-	t.Run("RollingRestartReEnqueue", doTestRollingRestartReEnqueue)
+	t.Run("PodDeleteMidJob", func(t *testing.T) {
+		skipUnlessSlowInference(t)
+		doTestPodDeleteMidJob(t)
+	})
+	t.Run("RollingRestartReEnqueue", func(t *testing.T) {
+		skipUnlessSlowInference(t)
+		doTestRollingRestartReEnqueue(t)
+	})
 }
 
 // doTestPodDeleteMidJob submits a batch with long-running requests

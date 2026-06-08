@@ -28,6 +28,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"gopkg.in/yaml.v3"
 )
 
 func getEnvOrDefault(key, def string) string {
@@ -84,6 +85,234 @@ func detectExchangeClientType(t *testing.T) string {
 		return "valkey"
 	}
 	return "redis"
+}
+
+// isModelGatewayConfigured reports whether model is listed in the processor's
+// modelGateways Helm values.
+func isModelGatewayConfigured(t *testing.T, model string) bool {
+	t.Helper()
+
+	out, err := exec.Command("helm", "get", "values", testHelmRelease,
+		"-n", testNamespace, "-o", "json",
+	).CombinedOutput()
+	if err != nil {
+		t.Logf("helm get values failed, assuming model %q not configured: %v", model, err)
+		return false
+	}
+	var vals struct {
+		Processor struct {
+			Config struct {
+				ModelGateways map[string]any `json:"modelGateways"`
+			} `json:"config"`
+		} `json:"processor"`
+	}
+	if err := json.Unmarshal(out, &vals); err != nil {
+		t.Logf("failed to parse helm values, assuming model %q not configured: %v", model, err)
+		return false
+	}
+	_, ok := vals.Processor.Config.ModelGateways[model]
+	return ok
+}
+
+// skipUnlessModelConfigured skips tests that require an extra model gateway
+// (e.g. RHOAI deployments with a single LLMInferenceService).
+func skipUnlessModelConfigured(t *testing.T, model string) {
+	t.Helper()
+
+	if v := getEnvOrDefault("TEST_SKIP_MULTIMODEL", ""); v == "true" || v == "1" {
+		t.Skip("TEST_SKIP_MULTIMODEL is set")
+	}
+	if !isModelGatewayConfigured(t, model) {
+		t.Skipf("model %q not configured in processor modelGateways", model)
+	}
+}
+
+// detectPostgresqlDB returns the PostgreSQL database name from the Helm release,
+// falling back to "postgres" when it cannot be detected.
+func detectPostgresqlDB(t *testing.T) string {
+	t.Helper()
+
+	if v := os.Getenv("TEST_POSTGRESQL_DB"); v != "" {
+		return v
+	}
+	out, err := exec.Command("helm", "get", "values", testPostgresqlRelease,
+		"-n", testNamespace, "-o", "json",
+	).CombinedOutput()
+	if err != nil {
+		t.Logf("helm get values %s failed, defaulting to postgres: %v", testPostgresqlRelease, err)
+		return "postgres"
+	}
+	var vals struct {
+		Auth struct {
+			Database string `json:"database"`
+		} `json:"auth"`
+	}
+	if err := json.Unmarshal(out, &vals); err != nil || vals.Auth.Database == "" {
+		return "postgres"
+	}
+	return vals.Auth.Database
+}
+
+// isSlowInferenceEnvironment reports whether the deployment uses dev-deploy
+// sim-model latency (required by timing-sensitive cancel/expiration tests).
+func isSlowInferenceEnvironment() bool {
+	if v := getEnvOrDefault("TEST_SLOW_INFERENCE", ""); v == "true" || v == "1" {
+		return true
+	}
+	if v := getEnvOrDefault("TEST_SKIP_TIMING_TESTS", ""); v == "true" || v == "1" {
+		return false
+	}
+	return strings.HasPrefix(testModel, "sim-model")
+}
+
+// skipUnlessSlowInference skips tests that rely on slow per-request latency
+// (e.g. RHOAI inference-sim with facebook/opt-125m completes too quickly).
+func skipUnlessSlowInference(t *testing.T) {
+	t.Helper()
+	if !isSlowInferenceEnvironment() {
+		t.Skipf("timing-sensitive test requires slow inference (sim-model); current TEST_MODEL=%q", testModel)
+	}
+}
+
+// getConfiguredPassThroughHeaders reads pass_through_headers from the apiserver ConfigMap.
+func getConfiguredPassThroughHeaders(t *testing.T) []string {
+	t.Helper()
+
+	cmName := fmt.Sprintf("%s-apiserver-config", testHelmRelease)
+	out, err := exec.Command(testKubeCLI, "get", "configmap", cmName,
+		"-n", testNamespace,
+		"-o", "jsonpath={.data['config\\.yaml']}",
+	).CombinedOutput()
+	if err != nil {
+		t.Logf("failed to read apiserver configmap: %v", err)
+		return nil
+	}
+	var root struct {
+		BatchAPI struct {
+			PassThroughHeaders []string `yaml:"pass_through_headers"`
+		} `yaml:"batch_api"`
+	}
+	if err := yaml.Unmarshal(out, &root); err != nil {
+		t.Logf("failed to parse apiserver config: %v", err)
+		return nil
+	}
+	return root.BatchAPI.PassThroughHeaders
+}
+
+// skipUnlessPassThroughHeadersConfigured skips when the deployment does not
+// forward the e2e test pass-through headers (RHOAI defaults to Authorization only).
+func skipUnlessPassThroughHeadersConfigured(t *testing.T) {
+	t.Helper()
+
+	configured := getConfiguredPassThroughHeaders(t)
+	for header := range testPassThroughHeaders {
+		found := false
+		for _, c := range configured {
+			if strings.EqualFold(c, header) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Skipf("pass-through header %q not configured in apiserver (configured: %v)", header, configured)
+		}
+	}
+}
+
+// isObsReachable reports whether an observability /ready endpoint responds.
+func isObsReachable(url string) bool {
+	resp, err := testHTTPClient.Get(url + "/ready")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// detectGCInterval returns the configured GC sweep interval from Helm values.
+func detectGCInterval(t *testing.T) time.Duration {
+	t.Helper()
+
+	out, err := exec.Command("helm", "get", "values", testHelmRelease,
+		"-n", testNamespace, "-o", "json",
+	).CombinedOutput()
+	if err != nil {
+		t.Logf("helm get values failed, assuming GC interval 30m: %v", err)
+		return 30 * time.Minute
+	}
+	var vals struct {
+		GC struct {
+			Config struct {
+				Interval string `json:"interval"`
+			} `json:"config"`
+		} `json:"gc"`
+	}
+	if err := json.Unmarshal(out, &vals); err != nil || vals.GC.Config.Interval == "" {
+		return 30 * time.Minute
+	}
+	d, err := time.ParseDuration(vals.GC.Config.Interval)
+	if err != nil {
+		t.Logf("invalid GC interval %q, assuming 30m: %v", vals.GC.Config.Interval, err)
+		return 30 * time.Minute
+	}
+	return d
+}
+
+// skipUnlessFastGC skips GC e2e tests when the sweep interval exceeds the test wait window.
+func skipUnlessFastGC(t *testing.T) {
+	t.Helper()
+
+	const maxWait = 1 * time.Minute
+	interval := detectGCInterval(t)
+	if interval > maxWait {
+		t.Skipf("GC interval %v exceeds e2e wait window %v (dev-deploy uses 5s)", interval, maxWait)
+	}
+}
+
+// restartGCDeployment rolls the GC deployment so a fresh pod runs an immediate
+// collection cycle. Needed when the deployed GC image ignores a short configured
+// interval (e.g. some odh-stable builds still sweep every 1h).
+func restartGCDeployment(t *testing.T) {
+	t.Helper()
+
+	if !testKubectlAvailable {
+		return
+	}
+	deployName := fmt.Sprintf("%s-gc", testHelmRelease)
+	out, err := exec.Command(testKubeCLI, "rollout", "restart",
+		fmt.Sprintf("deployment/%s", deployName), "-n", testNamespace,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s rollout restart %s failed: %v\n%s", testKubeCLI, deployName, err, out)
+	}
+	out, err = exec.Command(testKubeCLI, "rollout", "status",
+		fmt.Sprintf("deployment/%s", deployName), "-n", testNamespace, "--timeout=120s",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s rollout status %s failed: %v\n%s", testKubeCLI, deployName, err, out)
+	}
+	t.Logf("restarted %s to trigger immediate GC cycle", deployName)
+}
+
+// skipUnlessHelmUpgradeSafe skips when helm server-side apply would conflict
+// with a prior kubectl patch (e.g. manual processor resource changes).
+func skipUnlessHelmUpgradeSafe(t *testing.T) {
+	t.Helper()
+
+	if v := getEnvOrDefault("TEST_SKIP_HELM_UPGRADE", ""); v == "true" || v == "1" {
+		t.Skip("TEST_SKIP_HELM_UPGRADE is set")
+	}
+	out, err := exec.Command(testKubeCLI, "get", "deployment",
+		fmt.Sprintf("%s-processor", testHelmRelease),
+		"-n", testNamespace, "-o", "json",
+	).CombinedOutput()
+	if err != nil {
+		t.Logf("failed to inspect processor deployment for helm safety: %v", err)
+		return
+	}
+	if strings.Contains(string(out), `"manager":"kubectl-patch"`) {
+		t.Skip("processor deployment was kubectl-patched; helm server-side apply would conflict")
+	}
 }
 
 // ── Client helpers ───────────────────────────────────────────────────────

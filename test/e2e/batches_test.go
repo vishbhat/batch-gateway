@@ -38,16 +38,34 @@ func testBatches(t *testing.T) {
 	})
 	t.Run("Cancel", func(t *testing.T) {
 		t.Run("BeforeProcessing", doTestBatchCancelBeforeProcessing)
-		t.Run("InProgress", doTestBatchCancel)
-		t.Run("IdempotentRetry", doTestCancelIdempotentRetry)
+		t.Run("InProgress", func(t *testing.T) {
+			skipUnlessSlowInference(t)
+			doTestBatchCancel(t)
+		})
+		t.Run("IdempotentRetry", func(t *testing.T) {
+			skipUnlessSlowInference(t)
+			doTestCancelIdempotentRetry(t)
+		})
 		t.Run("TerminalBatchRejected", doTestCancelTerminalBatchRejected)
 	})
 	t.Run("MixedSuccessFailure", doTestBatchMixedSuccessFailure)
 	t.Run("SharedInputFile", doTestBatchSharedInputFile)
-	t.Run("PassThroughHeaders", doTestPassThroughHeaders)
-	t.Run("Expiration", doTestBatchExpiration)
-	t.Run("MultiModel", doTestMultiModelBatch)
-	t.Run("ProgressPolling", doTestProgressPolling)
+	t.Run("PassThroughHeaders", func(t *testing.T) {
+		skipUnlessPassThroughHeadersConfigured(t)
+		doTestPassThroughHeaders(t)
+	})
+	t.Run("Expiration", func(t *testing.T) {
+		skipUnlessSlowInference(t)
+		doTestBatchExpiration(t)
+	})
+	t.Run("MultiModel", func(t *testing.T) {
+		skipUnlessModelConfigured(t, testModelB)
+		doTestMultiModelBatch(t)
+	})
+	t.Run("ProgressPolling", func(t *testing.T) {
+		skipUnlessSlowInference(t)
+		doTestProgressPolling(t)
+	})
 	t.Run("Ingestion", func(t *testing.T) {
 		t.Run("DuplicateCustomID", doTestDuplicateCustomID)
 		t.Run("StreamingRejected", doTestStreamingRejected)
@@ -73,11 +91,11 @@ func doTestBatchCancel(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":1,"messages":[{"role":"user","content":"Hi %d"}]}}`, i, i))
+			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"Hi %d"}]}}`, i, testModel, i))
 	}
 	for i := 1; i <= 20; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":200,"messages":[{"role":"user","content":"Tell me a long story %d"}]}}`, i, i))
+			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"Tell me a long story %d"}]}}`, i, testModel, i))
 	}
 	slowJSONL := strings.Join(lines, "\n")
 	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-cancel-%s.jsonl", testRunID), slowJSONL)

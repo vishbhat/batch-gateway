@@ -28,8 +28,14 @@ import (
 )
 
 func testGarbageCollection(t *testing.T) {
-	t.Run("CollectsExpiredFile", doTestGCCollectsExpiredFile)
-	t.Run("CollectsExpiredBatch", doTestGCCollectsExpiredBatch)
+	t.Run("CollectsExpiredFile", func(t *testing.T) {
+		skipUnlessFastGC(t)
+		doTestGCCollectsExpiredFile(t)
+	})
+	t.Run("CollectsExpiredBatch", func(t *testing.T) {
+		skipUnlessFastGC(t)
+		doTestGCCollectsExpiredBatch(t)
+	})
 }
 
 // expireInDB sets the expiry of the given item to 1 (epoch second 1 = long past).
@@ -48,7 +54,7 @@ func expireInPostgresql(t *testing.T, table, id string) {
 	t.Helper()
 
 	sql := fmt.Sprintf("UPDATE %s SET expiry = 1 WHERE id = '%s'", table, id)
-	cmd := fmt.Sprintf(`PGPASSWORD="$(cat "$POSTGRES_PASSWORD_FILE")" psql -U postgres -d postgres -c %q`, sql)
+	cmd := fmt.Sprintf(`PGPASSWORD="$(cat "$POSTGRES_PASSWORD_FILE")" psql -U postgres -d %s -c %q`, testPostgresqlDB, sql)
 	out, err := exec.Command(testKubeCLI, "exec",
 		fmt.Sprintf("%s-0", testPostgresqlRelease),
 		"-n", testNamespace,
@@ -112,6 +118,7 @@ func doTestGCCollectsExpiredFile(t *testing.T) {
 
 	// Force-expire it in the database
 	expireInDB(t, "file_items", fileID)
+	restartGCDeployment(t)
 
 	// Wait for the GC to collect it (GC interval is 5s in dev-deploy)
 	const (
@@ -158,6 +165,7 @@ func doTestGCCollectsExpiredBatch(t *testing.T) {
 
 	// Force-expire it in the database
 	expireInDB(t, "batch_items", batchID)
+	restartGCDeployment(t)
 
 	// Wait for the GC to collect it (GC interval is 5s in dev-deploy)
 	const (

@@ -45,6 +45,8 @@ const (
 )
 
 func testAIMD(t *testing.T) {
+	skipUnlessModelConfigured(t, testModel429)
+	skipUnlessModelConfigured(t, testModelAIMD)
 	t.Run("DecreaseAndIsolation", doTestAIMDDecreaseAndIsolation)
 	t.Run("Recovery", doTestAIMDRecovery)
 }

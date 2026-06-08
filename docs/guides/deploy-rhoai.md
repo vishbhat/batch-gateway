@@ -686,9 +686,10 @@ spec:
           type: ReplacePrefixMatch
           replacePrefixMatch: /v1/completions
     backendRefs:
-    - group: inference.networking.x-k8s.io
+    - group: inference.networking.k8s.io
       kind: InferencePool
       name: ${POOL_NAME}
+      port: 8000
   - matches:
     - path:
         type: PathPrefix
@@ -700,9 +701,10 @@ spec:
           type: ReplacePrefixMatch
           replacePrefixMatch: /v1/chat/completions
     backendRefs:
-    - group: inference.networking.x-k8s.io
+    - group: inference.networking.k8s.io
       kind: InferencePool
       name: ${POOL_NAME}
+      port: 8000
   - matches:
     - path:
         type: PathPrefix
@@ -714,15 +716,72 @@ spec:
           type: ReplacePrefixMatch
           replacePrefixMatch: /
     backendRefs:
-    - group: inference.networking.x-k8s.io
+    - group: inference.networking.k8s.io
       kind: InferencePool
       name: ${POOL_NAME}
+      port: 8000
 EOF
 ```
 
 > **Same path pattern**: The batch-llm-route uses the same `/{namespace}/{isvc-name}/v1/*` path pattern as the auto-generated LLM route on the external Gateway. This allows the processor to use the same URL format.
 
 > **URL rewrite**: Each rule strips the `/{namespace}/{isvc-name}` prefix before forwarding to the InferencePool, matching the rewrite behavior of the auto-generated LLM route.
+
+> **API group**: Use `inference.networking.k8s.io` (not `inference.networking.x-k8s.io`) and set `port: 8000` on each `InferencePool` backendRef. An incorrect group leaves `ResolvedRefs=False` and the Internal Gateway returns 500 (`cluster_not_found`).
+
+</details>
+
+<details>
+<summary>Enable Authorino TLS on Internal Gateway</summary>
+
+RHOAI auto-creates `openshift-ai-inference-authn-ssl` for the external Gateway only. The Internal Gateway needs the same TLS upstream to Authorino or Kuadrant wasm auth fails with `gRPC status code is not OK` and returns 500:
+
+```bash
+oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: batch-internal-gateway-authn-ssl
+  namespace: openshift-ingress
+spec:
+  priority: -1
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: batch-internal-gateway
+  configPatches:
+  - applyTo: CLUSTER
+    match:
+      cluster:
+        service: authorino-authorino-authorization.kuadrant-system.svc.cluster.local
+    patch:
+      operation: ADD
+      value:
+        connect_timeout: 1s
+        http2_protocol_options: {}
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          cluster_name: kuadrant-auth-service
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: authorino-authorino-authorization.kuadrant-system.svc.cluster.local
+                    port_value: 50051
+        name: kuadrant-auth-service
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              validation_context:
+                trusted_ca:
+                  filename: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+        type: STRICT_DNS
+EOF
+oc rollout restart deployment/batch-internal-gateway-openshift-default -n openshift-ingress
+```
 
 </details>
 
@@ -1263,3 +1322,15 @@ for i in $(seq 1 25); do
     echo "Request $i: $http_code"
 done
 ```
+
+### 4.9 E2E test suite
+
+Apply e2e-friendly Helm settings (pass-through headers, pprof, 30s GC interval), then run the suite:
+
+```bash
+./scripts/test-e2e-rhoai.sh --setup-only   # one-time Helm config for e2e
+./scripts/test-e2e-rhoai.sh                # full suite (starts port-forwards automatically)
+./scripts/test-e2e-rhoai.sh TestE2E/Batches/Lifecycle   # single test
+```
+
+Tests that still skip on RHOAI (require inference simulators or a second model): timing-sensitive cancel/expiration/shutdown, MultiModel, AIMD, FlowControl/GIE, RetryOn429/RetryExhaustion, OtelTraces (no Jaeger).

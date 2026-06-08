@@ -52,7 +52,10 @@ func testFlowControl(t *testing.T) {
 		t.Run("RetryOn429", func(t *testing.T) {
 			t.Skip("#445: disabled until llm-d-inference-sim supports deterministic 429 injection; retry coverage lives in lower-level deterministic tests")
 		})
-		t.Run("RetryExhaustion", doTestRetryExhaustion)
+		t.Run("RetryExhaustion", func(t *testing.T) {
+			skipUnlessModelConfigured(t, testModelAlwaysFail)
+			doTestRetryExhaustion(t)
+		})
 	})
 
 	t.Run("GIE", func(t *testing.T) {
@@ -63,7 +66,10 @@ func testFlowControl(t *testing.T) {
 			t.Skip("GIE EPP not deployed (deploy with ENABLE_GIE=true)")
 		}
 		t.Run("HeaderPropagation", doTestGIEHeaderPropagation)
-		t.Run("BatchCompletionThroughEPP", doTestBatchCompletionThroughEPP)
+		t.Run("BatchCompletionThroughEPP", func(t *testing.T) {
+			skipUnlessModelConfigured(t, testModelB)
+			doTestBatchCompletionThroughEPP(t)
+		})
 	})
 }
 
