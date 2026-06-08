@@ -11,13 +11,34 @@ jobs:
   add-label:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Add default labels
         uses: actions/github-script@v9
         with:
           script: |
+            const { detectFromTitle, detectFromFiles } = require('${{ github.workspace }}/.github/scripts/detect-pr-label.js');
+
+            const title = context.payload.pull_request.title;
+            let category = detectFromTitle(title);
+
+            if (!category) {
+              const { data: files } = await github.rest.pulls.listFiles({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                per_page: 100,
+              });
+              category = detectFromFiles(files.map((f) => f.filename));
+            }
+
+            const labels = ['ai-assisted'];
+            if (category) labels.push(category);
+
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              labels: ['ai-assisted']
+              labels,
             });
