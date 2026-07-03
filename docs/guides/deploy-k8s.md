@@ -1291,3 +1291,184 @@ for i in $(seq 1 25); do
     echo "Request $i: $http_code"
 done
 ```
+
+## 5. AKS-Specific Considerations
+
+This section documents AKS-specific platform differences when following the guide above. The architecture, install order, and Helm configuration are identical — only the considerations below apply.
+
+### Gateway Networking
+
+The Istio gateway Service on AKS provisions an Azure Load Balancer. For internal-only clusters, annotate the Service to use an internal LB:
+
+```bash
+kubectl annotate svc istio-gateway-istio -n istio-ingress \
+  service.beta.kubernetes.io/azure-load-balancer-internal=true --overwrite
+```
+
+Clients access the gateway from within the VNet (peered networks, VPN, ExpressRoute). The `GW_URL` setup from §4.1 applies unchanged.
+
+### File Storage
+
+AKS default storage classes (`managed-csi`, `managed-premium`) are block storage and only support `ReadWriteOnce`. The batch-gateway requires shared access across apiserver, processor, and gc pods when using filesystem storage.
+
+**Option A — S3-compatible (recommended):** Use MinIO as documented in §3.7. No AKS-specific changes required.
+
+**Option B — Azure Files with pre-created storage account:** The built-in `azurefile-csi` and `azurefile-csi-premium` StorageClasses will fail if the subscription enforces HTTPS-only on storage accounts (the CSI driver creates accounts with HTTP enabled, which violates the policy). The solution is to pre-create the storage account and file share, then reference them via a static PV.
+
+1. Register the storage provider (if not already registered):
+
+```bash
+az provider register --namespace Microsoft.Storage
+az provider show --namespace Microsoft.Storage --query "registrationState" -o tsv
+# Wait until: Registered
+```
+
+2. Create a storage account and file share:
+
+```bash
+az storage account create \
+  --name <storage-account-name> \
+  --resource-group <aks-resource-group> \
+  --location <region> \
+  --sku Premium_LRS \
+  --kind FileStorage \
+  --https-only true \
+  --allow-shared-key-access true
+
+az storage share-rm create \
+  --storage-account <storage-account-name> \
+  --resource-group <aks-resource-group> \
+  --name batch-gateway \
+  --quota 100
+```
+
+3. Create a Kubernetes secret with the storage account key:
+
+```bash
+STORAGE_KEY=$(az storage account keys list \
+  --account-name <storage-account-name> \
+  --resource-group <aks-resource-group> \
+  --query "[0].value" -o tsv)
+
+kubectl create secret generic azure-files-secret \
+  --namespace batch-api \
+  --from-literal=azurestorageaccountname=<storage-account-name> \
+  --from-literal=azurestorageaccountkey="$STORAGE_KEY"
+```
+
+4. Create PV and PVC:
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: batch-gateway-files-pv
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: file.csi.azure.com
+    volumeHandle: <storage-account-name>-batch-gateway
+    volumeAttributes:
+      shareName: batch-gateway
+    nodeStageSecretRef:
+      name: azure-files-secret
+      namespace: batch-api
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: batch-gateway-files
+  namespace: batch-api
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 100Gi
+  volumeName: batch-gateway-files-pv
+EOF
+```
+
+5. Install batch-gateway referencing the PVC:
+
+```bash
+helm upgrade --install batch-gateway ./charts/batch-gateway \
+  --namespace batch-api \
+  --set global.fileClient.type=fs \
+  --set global.fileClient.fs.basePath=/tmp/batch-gateway \
+  --set global.fileClient.fs.pvcName=batch-gateway-files \
+  # ... remaining flags per §3.7
+```
+
+### Monitoring CRDs
+
+The llm-d simulated-accelerators values enable `PodMonitor` resources. AKS clusters do not ship the Prometheus Operator CRDs by default.
+
+**Option A — Install only the CRDs** (charts deploy successfully; no scraping):
+
+```bash
+kubectl apply --server-side -f \
+  https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml
+kubectl apply --server-side -f \
+  https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml
+```
+
+**Option B — Install the full Prometheus Operator** (CRDs + metric scraping):
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  --namespace monitoring --create-namespace
+```
+
+**Option C — Enable AKS managed Prometheus** (Azure Monitor):
+
+Enable [Azure Monitor managed service for Prometheus](https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/prometheus-metrics-overview) on the cluster. This supports PodMonitor/ServiceMonitor CRDs natively.
+
+**Option D — Disable monitoring** (skip PodMonitor entirely):
+
+```bash
+# InferencePool (GAIE)
+--set inferenceExtension.monitoring.prometheus.enabled=false
+
+# ModelService
+--set decode.monitoring.podmonitor.enabled=false \
+--set prefill.monitoring.podmonitor.enabled=false
+```
+
+### OCI Chart Registry
+
+The published OCI chart is available at `oci://ghcr.io/llm-d-incubation/charts/batch-gateway`. Use this as an alternative to the local chart path when deploying without a source checkout:
+
+```bash
+helm upgrade --install batch-gateway \
+  oci://ghcr.io/llm-d-incubation/charts/batch-gateway \
+  --version 0.2.0 \
+  --namespace batch-api \
+  # ... same --set flags as §3.7
+```
+
+### AKS Known Issues
+
+| Issue | Impact | Workaround |
+|-------|--------|------------|
+| GC pod reports `0/1 Ready` (v0.1.0 only) | Startup probe misconfiguration; fixed in later versions | Upgrade to v0.2.0+, or ignore — no functional impact |
+| `azurefile-csi` / `azurefile-csi-premium` PVC provisioning fails | Subscription policy requires HTTPS-only storage accounts; CSI driver creates accounts without HTTPS | Pre-create storage account with `--https-only true` (see File Storage Option B above) |
+| `Microsoft.Storage` provider not registered | `az storage account create` returns `SubscriptionNotFound` | Run `az provider register --namespace Microsoft.Storage` and wait for `Registered` state |
+
+### AKS Troubleshooting
+
+| Symptom | Cause | Resolution |
+|---------|-------|------------|
+| Pods `Pending` on PVC | Dynamic provisioning failed (HTTPS policy or wrong storage class) | Use pre-created storage account (Option B) or MinIO/S3 (Option A) |
+| PVC mount fails with `No such file or directory` | File share does not exist in the storage account | Create it with `az storage share-rm create --resource-group <rg> --storage-account <name> --name batch-gateway` |
+| File upload returns S3 error | `s3-secret-access-key` does not match `MINIO_ROOT_PASSWORD` | Recreate the `batch-gateway-secrets` secret with matching credentials |
+| Gateway unreachable from client | Internal LB; client outside VNet | Access from within the VNet or use an in-cluster test pod |
+| Pods `CrashLoopBackOff` with URL parse error | Special characters or placeholders in `postgresql-url` secret | Ensure the password in the connection string is URL-encoded and not a placeholder |
